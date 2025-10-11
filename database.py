@@ -69,6 +69,7 @@ class DatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_urls_url ON urls(url)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_urls_processed ON urls(is_processed)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_video_data_url ON video_data(video_url)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_diskwala_url ON diskwala_data(diskwala_url)")
             
             conn.commit()
             cursor.close()
@@ -280,4 +281,76 @@ class DatabaseManager:
             
         except Exception as e:
             logger.error(f"Error batch saving video data: {e}")
+            return False
+    
+    def get_video_data_for_download(self, limit=10):
+        """Get video data that hasn't been uploaded to DiskWala yet"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            query = """
+            SELECT vd.id, vd.video_url, vd.view_count, vd.like_count, vd.mp4_links, vd.jpg_links
+            FROM video_data vd
+            LEFT JOIN diskwala_data dd ON vd.video_url = dd.video_url
+            WHERE dd.video_url IS NULL
+            AND vd.mp4_links IS NOT NULL 
+            AND jsonb_array_length(vd.mp4_links) > 0
+            AND vd.jpg_links IS NOT NULL 
+            AND jsonb_array_length(vd.jpg_links) > 0
+            ORDER BY vd.created_at ASC
+            LIMIT %s
+            """
+            
+            cursor.execute(query, (limit,))
+            results = cursor.fetchall()
+            
+            cursor.close()
+            conn.close()
+            
+            # Convert results to list of dictionaries
+            video_data_list = []
+            for row in results:
+                video_data_list.append({
+                    'id': row[0],
+                    'video_url': row[1],
+                    'view_count': row[2],
+                    'like_count': row[3],
+                    'mp4_links': row[4],
+                    'jpg_links': row[5]
+                })
+            
+            return video_data_list
+            
+        except Exception as e:
+            logger.error(f"Error getting video data for download: {e}")
+            return []
+    
+    def save_diskwala_data(self, diskwala_url, jpg_image_link, mp4_link, video_url):
+        """Save DiskWala data to database"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            insert_query = """
+            INSERT INTO diskwala_data (diskwala_url, jpg_image_link, mp4_link, video_url)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (diskwala_url) 
+            DO UPDATE SET 
+                jpg_image_link = EXCLUDED.jpg_image_link,
+                mp4_link = EXCLUDED.mp4_link,
+                video_url = EXCLUDED.video_url,
+                updated_at = CURRENT_TIMESTAMP
+            """
+            
+            cursor.execute(insert_query, (diskwala_url, jpg_image_link, mp4_link, video_url))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"DiskWala data saved: {diskwala_url}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving DiskWala data: {e}")
             return False
