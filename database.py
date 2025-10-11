@@ -52,6 +52,19 @@ class DatabaseManager:
                 )
             """)
             
+            # DiskWala data table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS diskwala_data (
+                    id SERIAL PRIMARY KEY,
+                    diskwala_url TEXT UNIQUE NOT NULL,
+                    jpg_image_link TEXT,
+                    mp4_link TEXT,
+                    video_url TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
             # Create indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_urls_url ON urls(url)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_urls_processed ON urls(is_processed)")
