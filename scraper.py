@@ -6,12 +6,16 @@ import logging
 from models import ScrapedData, VideoData
 import re
 import time
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 logger = logging.getLogger(__name__)
 
 class EpornerScraper:
     def __init__(self):
         self.session = requests.Session()
+        
+        # Simple headers that work (like mvp.py)
         self.headers = {
             "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -22,6 +26,10 @@ class EpornerScraper:
             "Connection": "keep-alive",
         }
         self.session.headers.update(self.headers)
+        
+        # Disable SSL verification warnings
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     
     def scrape_url(self, url, max_retries=3):
         """Scrape a single URL and extract data with retry mechanism"""
@@ -29,7 +37,12 @@ class EpornerScraper:
             try:
                 logger.info(f"Scraping URL: {url} (attempt {attempt + 1})")
                 
-                response = self.session.get(url, timeout=20)
+                # Create a fresh session for each request to avoid connection reuse issues
+                fresh_session = requests.Session()
+                fresh_session.headers.update(self.headers)
+                
+                # Make request with SSL verification disabled
+                response = fresh_session.get(url, timeout=20, verify=False)
                 response.raise_for_status()
                 
                 soup = BeautifulSoup(response.text, 'html.parser')
@@ -47,24 +60,30 @@ class EpornerScraper:
                 
                 logger.info(f"Processed {'video' if is_video_url else 'page'} URL: {url}")
                 
+                # Close the fresh session
+                fresh_session.close()
+                
                 return ScrapedData(
                     url=url,
                     video_data=video_data,
                     internal_links=internal_links
                 )
                 
-            except requests.RequestException as e:
-                logger.warning(f"Request error scraping {url} (attempt {attempt + 1}): {e}")
+            except Exception as e:
+                logger.warning(f"Error scraping {url} (attempt {attempt + 1}): {e}")
                 if attempt == max_retries - 1:
                     logger.error(f"Failed to scrape {url} after {max_retries} attempts")
                     return ScrapedData(url=url, internal_links=[])
-                time.sleep(2 ** attempt)  # Exponential backoff
-                
-            except Exception as e:
-                logger.error(f"Error scraping {url} (attempt {attempt + 1}): {e}")
-                if attempt == max_retries - 1:
-                    return ScrapedData(url=url, internal_links=[])
-                time.sleep(2 ** attempt)  # Exponential backoff
+                else:
+                    # Wait before retry
+                    import time
+                    time.sleep(1)
+        
+        return ScrapedData(url=url, internal_links=[])
+    
+    def close(self):
+        """Close the session"""
+        self.session.close()
     
     def extract_video_data(self, url, soup):
         """Extract video data from page"""
@@ -141,14 +160,11 @@ class EpornerScraper:
         return None
     
     def extract_like_count(self, soup):
-        """Extract like count from page"""
+        """Extract like count from page, avoiding concatenation with dislikes"""
         like_selectors = [
             '*[id*="like"]',
             '*[class*="like"]',
             '*[title*="like"]',
-            '.rating',
-            '*[class*="rating"]',
-            '*[class*="vote"]',
             '.like-count',
             '.video-likes',
             '*[data-likes]',
@@ -166,15 +182,39 @@ class EpornerScraper:
             element = soup.select_one(selector)
             if element and element.get_text(strip=True):
                 text = element.get_text(strip=True)
-                # Extract numbers from text
+                
+                # Skip if text contains both likes and dislikes (avoid concatenation)
+                if any(word in text.lower() for word in ['dislike', 'down', 'negative', 'unlike']):
+                    continue
+                
+                # Extract numbers from text, but be more careful
                 numbers = re.findall(r'[\d,]+', text)
                 if numbers:
-                    return numbers[0]
+                    # If multiple numbers found, prefer the first one (usually likes)
+                    # and avoid concatenated numbers
+                    like_count = numbers[0]
+                    
+                    # Additional validation: if the number seems too large (likely concatenated),
+                    # try to find a more reasonable like count
+                    if len(like_count.replace(',', '')) > 6:  # More than 6 digits seems suspicious
+                        # Look for patterns like "123 likes" or "123 upvotes"
+                        like_patterns = [
+                            r'(\d{1,6}(?:,\d{3})*)\s*(?:likes?|upvotes?|thumbs?\s*up)',
+                            r'(?:likes?|upvotes?|thumbs?\s*up)\s*(\d{1,6}(?:,\d{3})*)',
+                            r'(\d{1,6}(?:,\d{3})*)\s*\+',  # Pattern like "123+"
+                        ]
+                        
+                        for pattern in like_patterns:
+                            match = re.search(pattern, text, re.I)
+                            if match:
+                                return match.group(1)
+                    
+                    return like_count
         
         return None
     
     def extract_mp4_links(self, base_url, soup):
-        """Extract all MP4 links from page"""
+        """Extract one MP4 link from page, preferring 480p quality"""
         mp4_links = set()
         
         # Find in video sources
@@ -210,10 +250,23 @@ class EpornerScraper:
                 for match in mp4_matches:
                     mp4_links.add(match)
         
-        return list(mp4_links)
+        # Select one MP4 URL based on quality preference
+        if not mp4_links:
+            return []
+        
+        # Convert to list for processing
+        mp4_list = list(mp4_links)
+        
+        # Prefer 480p quality
+        for url in mp4_list:
+            if '480p' in url.lower() or '480' in url.lower():
+                return [url]
+        
+        # If no 480p found, return the first available
+        return [mp4_list[0]]
     
     def extract_jpg_links(self, base_url, soup):
-        """Extract all JPG links from page"""
+        """Extract one JPG link from page"""
         jpg_links = set()
         
         # Find in images
@@ -249,7 +302,10 @@ class EpornerScraper:
                 for match in jpg_matches:
                     jpg_links.add(match)
         
-        return list(jpg_links)
+        # Return only the first JPG link found
+        if jpg_links:
+            return [list(jpg_links)[0]]
+        return []
     
     def extract_internal_links(self, base_url, soup):
         """Extract all internal links from page"""
@@ -263,13 +319,12 @@ class EpornerScraper:
                 full_url = urljoin(base_url, href)
                 parsed_url = urlparse(full_url)
                 
-                # Check if it's internal link and from eporner.com
+                # Check if it's internal link and from eporner.com (including subdomains)
                 if parsed_url.netloc == base_domain or 'eporner.com' in parsed_url.netloc:
-                    # Filter out unwanted URLs
+                    # Only filter out obvious non-content URLs, keep most links
                     if not any(exclude in full_url.lower() for exclude in [
-                        '/logout', '/login', '/register', '/contact', '/about',
-                        '/terms', '/privacy', '/dmca', '/sitemap', '/rss',
-                        '.css', '.js', '.png', '.gif', '.ico', '.xml'
+                        '.css', '.js', '.png', '.gif', '.ico', '.xml', '.pdf',
+                        '/sitemap', '/rss', '/robots.txt'
                     ]):
                         internal_links.add(full_url)
         
