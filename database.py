@@ -7,8 +7,8 @@ logger = logging.getLogger(__name__)
 class DatabaseManager:
     def __init__(self, db_config=None):
         self.db_config = db_config or {
-            'dbname': 'bp_data',
-            'user': 'postgres',
+            'dbname': 'e_data',
+            'user': 'appuser',
             'password': 'root',
             'host': 'localhost',
             'port': '5432'
