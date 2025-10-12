@@ -326,6 +326,24 @@ class DatabaseManager:
             logger.error(f"Error getting video data for download: {e}")
             return []
     
+    def is_video_already_uploaded(self, video_url):
+        """Check if video URL already exists in diskwala_data table"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT id FROM diskwala_data WHERE video_url = %s", (video_url,))
+            result = cursor.fetchone()
+            
+            cursor.close()
+            conn.close()
+            
+            return result is not None
+            
+        except Exception as e:
+            logger.error(f"Error checking if video already uploaded: {e}")
+            return False
+    
     def save_diskwala_data(self, diskwala_url, jpg_image_link, mp4_link, video_url):
         """Save DiskWala data to database"""
         try:

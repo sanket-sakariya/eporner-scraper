@@ -127,6 +127,34 @@ class IntegratedDownloaderBot:
             n /= 1024.0
         return f"{n:.1f}PB"
     
+    def cleanup_files(self, mp4_path, jpg_path):
+        """Delete MP4 and JPG files after successful upload and posting"""
+        try:
+            deleted_files = []
+            
+            # Delete MP4 file
+            if mp4_path and os.path.exists(mp4_path):
+                os.remove(mp4_path)
+                deleted_files.append(os.path.basename(mp4_path))
+                logger.info(f"🗑️  Deleted MP4 file: {os.path.basename(mp4_path)}")
+            
+            # Delete JPG file
+            if jpg_path and os.path.exists(jpg_path):
+                os.remove(jpg_path)
+                deleted_files.append(os.path.basename(jpg_path))
+                logger.info(f"🗑️  Deleted JPG file: {os.path.basename(jpg_path)}")
+            
+            if deleted_files:
+                logger.info(f"✅ Cleanup completed: {', '.join(deleted_files)}")
+            else:
+                logger.info("ℹ️  No files to cleanup")
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+            return False
+    
     async def setup_telegram_client(self):
         """Setup Telegram client"""
         client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
@@ -200,23 +228,17 @@ class IntegratedDownloaderBot:
             # Create message text
             message_text = f"""🎬 **New Video Uploaded!**
 
-📥 𝐃𝐨𝐰𝐧𝐥𝐨𝐚𝐝 𝐋𝐢𝐧𝐤𝐬/👀𝐖𝐚𝐭𝐜𝐡 𝐎𝐧𝐥𝐢𝐧𝐞
-
-🍑
+📥 𝐃𝐨𝐰𝐧𝐥𝐨𝐚𝐝 𝐋𝐢𝐧𝐤𝐬/👀𝐖𝐚𝐭𝐜𝐡 𝐎𝐧𝐥𝐢𝐧𝐞 🍑
 
 👇
-
 
 🔗 **Download Link:** {diskwala_url}
 
 .
 
-.
-
 𝗘𝗻𝗷𝗼𝘆 ♥️🍑✌️
 
-
-#Video #Download #Eporner"""
+"""
             
             # Send image with caption
             if os.path.exists(jpg_path):
@@ -267,6 +289,11 @@ class IntegratedDownloaderBot:
                 try:
                     logger.info(f"\n[{idx}/{len(video_data_list)}] Processing video: {video_data['video_url']}")
                     
+                    # Check if video is already uploaded to DiskWala
+                    if self.db.is_video_already_uploaded(video_data['video_url']):
+                        logger.info(f"⏭️  Video already uploaded to DiskWala, skipping: {video_data['video_url']}")
+                        continue
+                    
                     # Get MP4 and JPG links
                     mp4_links = video_data['mp4_links']
                     jpg_links = video_data['jpg_links']
@@ -291,6 +318,8 @@ class IntegratedDownloaderBot:
                     
                     if not jpg_path:
                         logger.error(f"Failed to download JPG: {jpg_url}")
+                        # Clean up MP4 file if JPG download failed
+                        self.cleanup_files(mp4_path, None)
                         continue
                     
                     # Upload to DiskWala
@@ -298,6 +327,8 @@ class IntegratedDownloaderBot:
                     
                     if not upload_success:
                         logger.error(f"Failed to upload to DiskWala: {mp4_path}")
+                        # Clean up files if upload failed
+                        self.cleanup_files(mp4_path, jpg_path)
                         continue
                     
                     # Wait for DiskWala URL
@@ -321,17 +352,13 @@ class IntegratedDownloaderBot:
                         )
                         
                         logger.info(f"✅ Successfully processed: {video_data['video_url']}")
+                        
+                        # Clean up downloaded files after successful upload and posting
+                        self.cleanup_files(mp4_path, jpg_path)
                     else:
                         logger.warning(f"No DiskWala URL received for: {video_data['video_url']}")
-                    
-                    # Clean up downloaded files
-                    try:
-                        if os.path.exists(mp4_path):
-                            os.remove(mp4_path)
-                        if os.path.exists(jpg_path):
-                            os.remove(jpg_path)
-                    except Exception as e:
-                        logger.warning(f"Error cleaning up files: {e}")
+                        # Clean up files even if DiskWala URL not received
+                        self.cleanup_files(mp4_path, jpg_path)
                     
                     # Delay between uploads
                     if idx < len(video_data_list):
