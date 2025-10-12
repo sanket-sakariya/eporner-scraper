@@ -69,14 +69,74 @@ class EpornerScraper:
                     internal_links=internal_links
                 )
                 
-            except Exception as e:
-                logger.warning(f"Error scraping {url} (attempt {attempt + 1}): {e}")
+            except requests.exceptions.ConnectionError as e:
+                error_msg = str(e)
+                if "ConnectionResetError" in error_msg or "10054" in error_msg:
+                    logger.warning(f"🔄 Connection reset by server for {url} (attempt {attempt + 1}): {e}")
+                    # This is a recoverable error - server is blocking but might work later
+                    if attempt == max_retries - 1:
+                        logger.error(f"Failed to scrape {url} after {max_retries} attempts - ConnectionResetError")
+                        return ScrapedData(url=url, internal_links=[])
+                    else:
+                        time.sleep(2)  # Wait before retry
+                elif "Connection aborted" in error_msg:
+                    logger.warning(f"🔄 Connection aborted for {url} (attempt {attempt + 1}): {e}")
+                    if attempt == max_retries - 1:
+                        logger.error(f"Failed to scrape {url} after {max_retries} attempts - Connection aborted")
+                        return ScrapedData(url=url, internal_links=[])
+                    else:
+                        time.sleep(2)
+                else:
+                    logger.warning(f"🔄 Connection error for {url} (attempt {attempt + 1}): {e}")
+                    if attempt == max_retries - 1:
+                        logger.error(f"Failed to scrape {url} after {max_retries} attempts - Connection error")
+                        return ScrapedData(url=url, internal_links=[])
+                    else:
+                        time.sleep(1)
+                        
+            except requests.exceptions.Timeout as e:
+                logger.warning(f"⏰ Timeout for {url} (attempt {attempt + 1}): {e}")
                 if attempt == max_retries - 1:
-                    logger.error(f"Failed to scrape {url} after {max_retries} attempts")
+                    logger.error(f"Failed to scrape {url} after {max_retries} attempts - Timeout")
                     return ScrapedData(url=url, internal_links=[])
                 else:
-                    # Wait before retry
-                    import time
+                    time.sleep(1)
+                    
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404:
+                    logger.warning(f"🚫 Page not found (404) for {url}")
+                    # 404 is permanent - don't retry
+                    return ScrapedData(url=url, internal_links=[])
+                elif e.response.status_code == 403:
+                    logger.warning(f"🚫 Access forbidden (403) for {url}")
+                    # 403 might be temporary - retry
+                    if attempt == max_retries - 1:
+                        logger.error(f"Failed to scrape {url} after {max_retries} attempts - Access forbidden")
+                        return ScrapedData(url=url, internal_links=[])
+                    else:
+                        time.sleep(3)  # Longer wait for 403
+                elif e.response.status_code == 429:
+                    logger.warning(f"🚫 Rate limited (429) for {url}")
+                    # Rate limiting - retry with longer delay
+                    if attempt == max_retries - 1:
+                        logger.error(f"Failed to scrape {url} after {max_retries} attempts - Rate limited")
+                        return ScrapedData(url=url, internal_links=[])
+                    else:
+                        time.sleep(5)  # Longer wait for rate limiting
+                else:
+                    logger.warning(f"🔧 HTTP error {e.response.status_code} for {url} (attempt {attempt + 1}): {e}")
+                    if attempt == max_retries - 1:
+                        logger.error(f"Failed to scrape {url} after {max_retries} attempts - HTTP {e.response.status_code}")
+                        return ScrapedData(url=url, internal_links=[])
+                    else:
+                        time.sleep(1)
+                        
+            except Exception as e:
+                logger.warning(f"❌ Unexpected error for {url} (attempt {attempt + 1}): {e}")
+                if attempt == max_retries - 1:
+                    logger.error(f"Failed to scrape {url} after {max_retries} attempts - Unexpected error")
+                    return ScrapedData(url=url, internal_links=[])
+                else:
                     time.sleep(1)
         
         return ScrapedData(url=url, internal_links=[])

@@ -21,22 +21,39 @@ class QueueConsumer:
         )
         self.channel = self.connection.channel()
         
-        # Declare queues
+        # Declare main queues
         self.channel.queue_declare(queue='scraper_queue', durable=True)
         self.channel.queue_declare(queue='urls_queue', durable=True)
         self.channel.queue_declare(queue='data_queue', durable=True)
+        
+        # Declare DLX queues with progressive delays
+        self.channel.queue_declare(queue='scraper_dlx_5min', durable=True, arguments={'x-message-ttl': 300000})  # 5 minutes
+        self.channel.queue_declare(queue='scraper_dlx_10min', durable=True, arguments={'x-message-ttl': 600000})  # 10 minutes
+        self.channel.queue_declare(queue='scraper_dlx_15min', durable=True, arguments={'x-message-ttl': 900000})  # 15 minutes
+        self.channel.queue_declare(queue='scraper_dlx_failed', durable=True)  # Permanent failures
+        
+        # Declare exchanges
+        self.channel.exchange_declare(exchange='scraper_dlx', exchange_type='direct', durable=True)
+        
+        # Bind DLX queues to exchange
+        self.channel.queue_bind(exchange='scraper_dlx', queue='scraper_dlx_5min', routing_key='retry_5min')
+        self.channel.queue_bind(exchange='scraper_dlx', queue='scraper_dlx_10min', routing_key='retry_10min')
+        self.channel.queue_bind(exchange='scraper_dlx', queue='scraper_dlx_15min', routing_key='retry_15min')
+        self.channel.queue_bind(exchange='scraper_dlx', queue='scraper_dlx_failed', routing_key='failed')
         
         self.channel.basic_qos(prefetch_count=1)
 
 class ScraperConsumer(QueueConsumer):
     def __init__(self, rabbitmq_host='localhost'):
         super().__init__(rabbitmq_host)
+        self.failed_urls = set()  # Track permanently failed URLs
     
     def process_message(self, ch, method, properties, body):
         """Process message from scraper_queue"""
         try:
             message = json.loads(body)
             url = message.get('url')
+            retry_count = message.get('retry_count', 0)
             
             if not url:
                 ch.basic_ack(delivery_tag=method.delivery_tag)
@@ -48,8 +65,20 @@ class ScraperConsumer(QueueConsumer):
                 ch.basic_ack(delivery_tag=method.delivery_tag)
                 return
             
+            # Skip if permanently failed
+            if url in self.failed_urls:
+                logger.info(f"URL permanently failed, skipping: {url}")
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                return
+            
             # Scrape the URL
             scraped_data = self.scraper.scrape_url(url)
+            
+            # Check if scraping failed
+            if not scraped_data.internal_links and not scraped_data.video_data:
+                # Handle failed scraping with DLX
+                self.handle_scraping_failure(url, retry_count, ch, method)
+                return
             
             # Mark URL as processed
             self.db.mark_url_processed(url)
@@ -69,6 +98,47 @@ class ScraperConsumer(QueueConsumer):
         except Exception as e:
             logger.error(f"Error processing message: {e}")
             ch.basic_ack(delivery_tag=method.delivery_tag)
+    
+    def handle_scraping_failure(self, url, retry_count, ch, method):
+        """Handle scraping failure with progressive DLX retry"""
+        retry_count += 1
+        
+        if retry_count <= 1:
+            # First failure: retry after 5 minutes
+            logger.warning(f"🔄 First failure for {url}, retrying in 5 minutes (attempt {retry_count})")
+            self.publish_to_dlx_queue(url, retry_count, 'retry_5min')
+        elif retry_count <= 2:
+            # Second failure: retry after 10 minutes
+            logger.warning(f"🔄 Second failure for {url}, retrying in 10 minutes (attempt {retry_count})")
+            self.publish_to_dlx_queue(url, retry_count, 'retry_10min')
+        elif retry_count <= 3:
+            # Third failure: retry after 15 minutes
+            logger.warning(f"🔄 Third failure for {url}, retrying in 15 minutes (attempt {retry_count})")
+            self.publish_to_dlx_queue(url, retry_count, 'retry_15min')
+        else:
+            # Permanent failure: mark as failed
+            logger.error(f"❌ Permanent failure for {url} after {retry_count} attempts")
+            self.failed_urls.add(url)
+            self.publish_to_dlx_queue(url, retry_count, 'failed')
+        
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+    
+    def publish_to_dlx_queue(self, url, retry_count, routing_key):
+        """Publish URL to DLX queue for retry"""
+        message = json.dumps({
+            'url': url,
+            'retry_count': retry_count,
+            'timestamp': time.time()
+        })
+        
+        self.channel.basic_publish(
+            exchange='scraper_dlx',
+            routing_key=routing_key,
+            body=message,
+            properties=pika.BasicProperties(delivery_mode=2)
+        )
+        
+        logger.info(f"Published {url} to DLX queue: {routing_key}")
     
     
     def publish_to_urls_queue(self, url):
@@ -271,4 +341,143 @@ class DataConsumer(QueueConsumer):
             if self.data_buffer:
                 logger.info(f"Processing final batch of {len(self.data_buffer)} video data items")
                 self.process_batch()
+            self.channel.stop_consuming()
+
+class DLXConsumer(QueueConsumer):
+    """Consumer for DLX retry queues"""
+    def __init__(self, rabbitmq_host='localhost'):
+        super().__init__(rabbitmq_host)
+        self.failed_urls = set()  # Track permanently failed URLs
+    
+    def process_dlx_message(self, ch, method, properties, body):
+        """Process message from DLX queue"""
+        try:
+            message = json.loads(body)
+            url = message.get('url')
+            retry_count = message.get('retry_count', 0)
+            
+            if not url:
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                return
+            
+            # Skip if permanently failed
+            if url in self.failed_urls:
+                logger.info(f"URL permanently failed, skipping: {url}")
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                return
+            
+            # Skip if already processed
+            if self.db.is_url_processed(url):
+                logger.info(f"URL already processed: {url}")
+                ch.basic_ack(delivery_tag=method.delivery_tag)
+                return
+            
+            logger.info(f"🔄 Retrying URL from DLX: {url} (attempt {retry_count})")
+            
+            # Try scraping again
+            scraped_data = self.scraper.scrape_url(url)
+            
+            # Check if scraping succeeded
+            if scraped_data.internal_links or scraped_data.video_data:
+                # Success: mark as processed and handle data
+                self.db.mark_url_processed(url)
+                
+                # Send internal links to urls_queue
+                for internal_link in scraped_data.internal_links:
+                    if not self.db.is_url_processed(internal_link):
+                        self.publish_to_urls_queue(internal_link)
+                
+                # Send video data to data_queue
+                if scraped_data.video_data:
+                    self.publish_to_data_queue(scraped_data.video_data)
+                
+                logger.info(f"✅ DLX retry successful: {url}")
+            else:
+                # Still failed: handle next retry level
+                self.handle_dlx_retry_failure(url, retry_count, ch, method)
+                return
+            
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+            
+        except Exception as e:
+            logger.error(f"Error processing DLX message: {e}")
+            ch.basic_ack(delivery_tag=method.delivery_tag)
+    
+    def handle_dlx_retry_failure(self, url, retry_count, ch, method):
+        """Handle DLX retry failure"""
+        if retry_count <= 1:
+            # Move to 10-minute retry
+            logger.warning(f"🔄 DLX retry failed for {url}, moving to 10-minute retry")
+            self.publish_to_dlx_queue(url, retry_count + 1, 'retry_10min')
+        elif retry_count <= 2:
+            # Move to 15-minute retry
+            logger.warning(f"🔄 DLX retry failed for {url}, moving to 15-minute retry")
+            self.publish_to_dlx_queue(url, retry_count + 1, 'retry_15min')
+        else:
+            # Permanent failure
+            logger.error(f"❌ DLX permanent failure for {url} after {retry_count} attempts")
+            self.failed_urls.add(url)
+            self.publish_to_dlx_queue(url, retry_count + 1, 'failed')
+        
+        ch.basic_ack(delivery_tag=method.delivery_tag)
+    
+    def publish_to_dlx_queue(self, url, retry_count, routing_key):
+        """Publish URL to DLX queue for retry"""
+        message = json.dumps({
+            'url': url,
+            'retry_count': retry_count,
+            'timestamp': time.time()
+        })
+        
+        self.channel.basic_publish(
+            exchange='scraper_dlx',
+            routing_key=routing_key,
+            body=message,
+            properties=pika.BasicProperties(delivery_mode=2)
+        )
+        
+        logger.info(f"Published {url} to DLX queue: {routing_key}")
+    
+    def publish_to_urls_queue(self, url):
+        """Publish URL to urls_queue"""
+        message = json.dumps({'url': url})
+        self.channel.basic_publish(
+            exchange='',
+            routing_key='urls_queue',
+            body=message,
+            properties=pika.BasicProperties(delivery_mode=2)
+        )
+    
+    def publish_to_data_queue(self, video_data):
+        """Publish video data to data_queue"""
+        message = json.dumps(video_data.dict())
+        self.channel.basic_publish(
+            exchange='',
+            routing_key='data_queue',
+            body=message,
+            properties=pika.BasicProperties(delivery_mode=2)
+        )
+    
+    def start_consuming_dlx(self):
+        """Start consuming from DLX queues"""
+        logger.info("Starting DLX Consumer...")
+        
+        # Consume from all DLX retry queues
+        self.channel.basic_consume(
+            queue='scraper_dlx_5min',
+            on_message_callback=self.process_dlx_message
+        )
+        self.channel.basic_consume(
+            queue='scraper_dlx_10min',
+            on_message_callback=self.process_dlx_message
+        )
+        self.channel.basic_consume(
+            queue='scraper_dlx_15min',
+            on_message_callback=self.process_dlx_message
+        )
+        
+        try:
+            self.channel.start_consuming()
+        except KeyboardInterrupt:
+            logger.info("DLX Consumer stopped by user")
             self.channel.stop_consuming()
