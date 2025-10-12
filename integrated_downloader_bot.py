@@ -17,6 +17,10 @@ from telethon import TelegramClient, events
 from telethon.errors import FloodWaitError, RPCError
 from database import DatabaseManager
 import logging
+import urllib3
+
+# Disable SSL warnings for server compatibility
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -57,67 +61,162 @@ class IntegratedDownloaderBot:
         if not os.path.exists(self.download_dir):
             os.makedirs(self.download_dir)
         
-        # Setup requests session
+        # Setup requests session with server-optimized settings
         self.session = requests.Session()
+        
+        # Rotate User-Agents to avoid detection
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0"
+        ]
+        
         headers = {
-            "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36"),
-            "Accept": "*/*",
+            "User-Agent": user_agents[0],  # Will rotate in download_file
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Cache-Control": "max-age=0",
             "Referer": "https://www.eporner.com/",
         }
         self.session.headers.update(headers)
         
-        # Configure retry strategy
+        # Enhanced retry strategy for server environments
         retry_strategy = Retry(
-            total=3,
-            backoff_factor=2,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS"]
+            total=5,  # Increased retries for server
+            backoff_factor=3,  # Longer backoff
+            status_forcelist=[429, 500, 502, 503, 504, 403, 408],
+            allowed_methods=["HEAD", "GET", "OPTIONS"],
+            raise_on_status=False
         )
         
-        adapter = HTTPAdapter(max_retries=retry_strategy)
+        # Configure adapter with connection pooling
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            pool_connections=10,
+            pool_maxsize=20,
+            pool_block=False
+        )
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
+        
+        # Store user agents for rotation
+        self.user_agents = user_agents
+        self.current_ua_index = 0
     
-    def download_file(self, url, filename):
-        """Download a file from URL"""
-        try:
-            filepath = os.path.join(self.download_dir, filename)
-            
-            # Check if file already exists
-            if os.path.exists(filepath):
-                logger.info(f"File already exists: {filename}")
-                return filepath
-            
-            logger.info(f"Downloading: {url}")
-            
-            response = self.session.get(url, stream=True, timeout=30)
-            response.raise_for_status()
-            
-            # Get file size for progress tracking
-            total_size = int(response.headers.get('content-length', 0))
-            
-            with open(filepath, 'wb') as f:
-                downloaded = 0
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        
-                        # Show progress
-                        if total_size > 0:
-                            progress = (downloaded / total_size) * 100
-                            print(f"\rProgress: {progress:.1f}% ({downloaded}/{total_size} bytes)", end="", flush=True)
-            
-            print(f"\n✓ Downloaded: {filename}")
+    def download_file(self, url, filename, max_attempts=3):
+        """Download a file from URL with server-optimized retry logic"""
+        filepath = os.path.join(self.download_dir, filename)
+        
+        # Check if file already exists
+        if os.path.exists(filepath):
+            logger.info(f"File already exists: {filename}")
             return filepath
-            
-        except Exception as e:
-            logger.error(f"Error downloading {url}: {e}")
-            return None
+        
+        for attempt in range(max_attempts):
+            try:
+                # Rotate User-Agent for each attempt
+                self.current_ua_index = (self.current_ua_index + 1) % len(self.user_agents)
+                current_headers = self.session.headers.copy()
+                current_headers['User-Agent'] = self.user_agents[self.current_ua_index]
+                
+                logger.info(f"Downloading: {url} (attempt {attempt + 1}/{max_attempts})")
+                logger.info(f"Using User-Agent: {current_headers['User-Agent'][:50]}...")
+                
+                # Add random delay to avoid rate limiting
+                if attempt > 0:
+                    delay = 2 ** attempt  # Exponential backoff: 2, 4, 8 seconds
+                    logger.info(f"Waiting {delay} seconds before retry...")
+                    time.sleep(delay)
+                
+                # Make request with rotated headers
+                response = self.session.get(
+                    url, 
+                    stream=True, 
+                    timeout=(30, 300),  # (connect timeout, read timeout)
+                    headers=current_headers,
+                    allow_redirects=True,
+                    verify=False  # Disable SSL verification for server compatibility
+                )
+                
+                # Check response status
+                if response.status_code == 403:
+                    logger.warning(f"Access forbidden (403) - server might be blocking requests")
+                    continue
+                elif response.status_code == 429:
+                    logger.warning(f"Rate limited (429) - waiting longer...")
+                    time.sleep(10)
+                    continue
+                
+                response.raise_for_status()
+                
+                # Get file size for progress tracking
+                total_size = int(response.headers.get('content-length', 0))
+                logger.info(f"File size: {self.human_size(total_size) if total_size > 0 else 'Unknown'}")
+                
+                # Validate content type for MP4 files
+                if filename.endswith('.mp4'):
+                    content_type = response.headers.get('content-type', '').lower()
+                    if 'video' not in content_type and 'mp4' not in content_type:
+                        logger.warning(f"Unexpected content type: {content_type}")
+                        if attempt < max_attempts - 1:
+                            continue
+                
+                # Download with progress tracking
+                with open(filepath, 'wb') as f:
+                    downloaded = 0
+                    chunk_size = 16384  # Increased chunk size for server
+                    
+                    for chunk in response.iter_content(chunk_size=chunk_size):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            
+                            # Show progress
+                            if total_size > 0:
+                                progress = (downloaded / total_size) * 100
+                                print(f"\rProgress: {progress:.1f}% ({self.human_size(downloaded)}/{self.human_size(total_size)})", end="", flush=True)
+                
+                print(f"\n✓ Downloaded: {filename} ({self.human_size(downloaded)})")
+                
+                # Validate downloaded file
+                if filename.endswith('.mp4') and downloaded < 1024 * 1024:  # Less than 1MB
+                    logger.warning(f"Downloaded MP4 is very small ({self.human_size(downloaded)}), might be invalid")
+                    if attempt < max_attempts - 1:
+                        os.remove(filepath)
+                        continue
+                
+                return filepath
+                
+            except requests.exceptions.Timeout as e:
+                logger.warning(f"Timeout error (attempt {attempt + 1}): {e}")
+                if attempt < max_attempts - 1:
+                    continue
+                    
+            except requests.exceptions.ConnectionError as e:
+                logger.warning(f"Connection error (attempt {attempt + 1}): {e}")
+                if attempt < max_attempts - 1:
+                    continue
+                    
+            except requests.exceptions.HTTPError as e:
+                logger.warning(f"HTTP error {e.response.status_code} (attempt {attempt + 1}): {e}")
+                if attempt < max_attempts - 1:
+                    continue
+                    
+            except Exception as e:
+                logger.error(f"Unexpected error (attempt {attempt + 1}): {e}")
+                if attempt < max_attempts - 1:
+                    continue
+        
+        logger.error(f"Failed to download {url} after {max_attempts} attempts")
+        return None
     
     def human_size(self, n):
         """Convert bytes to human readable format"""
@@ -126,6 +225,42 @@ class IntegratedDownloaderBot:
                 return f"{n:3.1f}{unit}"
             n /= 1024.0
         return f"{n:.1f}PB"
+    
+    def test_network_connectivity(self):
+        """Test network connectivity and diagnose server issues"""
+        logger.info("🔍 Testing network connectivity...")
+        
+        test_urls = [
+            "https://www.eporner.com/",
+            "https://httpbin.org/ip",
+            "https://www.google.com/",
+        ]
+        
+        for url in test_urls:
+            try:
+                logger.info(f"Testing: {url}")
+                response = self.session.get(url, timeout=10)
+                logger.info(f"✅ {url} - Status: {response.status_code}")
+                
+                if "eporner.com" in url:
+                    # Check if we're being blocked
+                    if response.status_code == 403:
+                        logger.warning("🚫 eporner.com is blocking our requests (403 Forbidden)")
+                    elif "blocked" in response.text.lower() or "access denied" in response.text.lower():
+                        logger.warning("🚫 eporner.com is blocking our access")
+                    else:
+                        logger.info("✅ eporner.com is accessible")
+                        
+            except Exception as e:
+                logger.error(f"❌ {url} - Error: {e}")
+        
+        # Test DNS resolution
+        try:
+            import socket
+            ip = socket.gethostbyname("www.eporner.com")
+            logger.info(f"✅ DNS resolution for eporner.com: {ip}")
+        except Exception as e:
+            logger.error(f"❌ DNS resolution failed: {e}")
     
     def cleanup_files(self, mp4_path, jpg_path):
         """Delete MP4 and JPG files after successful upload and posting"""
@@ -258,6 +393,9 @@ class IntegratedDownloaderBot:
     async def process_videos(self):
         """Main process to download, upload, and send videos"""
         try:
+            # Test network connectivity first
+            self.test_network_connectivity()
+            
             # Get video data from database
             video_data_list = self.db.get_video_data_for_download(limit=100)
             
