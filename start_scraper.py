@@ -33,8 +33,8 @@ def check_postgres():
     try:
         import psycopg2
         conn = psycopg2.connect(
-            dbname='bp_data',
-            user='postgres',
+            dbname='e_data', #bp_data
+            user='appuser', #postgres
             password='root',
             host='localhost',
             port='5432'
@@ -64,7 +64,14 @@ def start_consumers():
     """Start the consumer processes"""
     logger.info("Starting consumer processes...")
     try:
+        # Start main consumers
         subprocess.Popen([sys.executable, "run_consumers.py"])
+        logger.info("Started main consumers (run_consumers.py)")
+        
+        # Start DLX consumer
+        subprocess.Popen([sys.executable, "run_dlx_consumer.py"])
+        logger.info("Started DLX consumer (run_dlx_consumer.py)")
+        
         return True
     except Exception as e:
         logger.error(f"Failed to start consumers: {e}")
