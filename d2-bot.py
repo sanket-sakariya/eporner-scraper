@@ -19,8 +19,8 @@ def setup_chrome_driver():
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_argument("--disable-plugins")
-    chrome_options.add_argument("--disable-images")
+    # chrome_options.add_argument("--disable-plugins")
+    # chrome_options.add_argument("--disable-images")
     chrome_options.add_argument("--disable-web-security")
     chrome_options.add_argument("--disable-features=VizDisplayCompositor")
     chrome_options.add_argument("--remote-debugging-port=9222")
@@ -46,7 +46,7 @@ def setup_chrome_driver():
     chrome_options.add_argument("--single-process")
     chrome_options.add_argument("--no-first-run")
     chrome_options.add_argument("--no-default-browser-check")
-    chrome_options.add_argument("--disable-javascript")  # We don't need JS for direct MP4 downloads
+    # chrome_options.add_argument("--disable-javascript")  # We don't need JS for direct MP4 downloads
     
     # User agent
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -68,7 +68,7 @@ def setup_chrome_driver():
     chrome_options.add_experimental_option("prefs", prefs)
     
     # Headless mode for server
-    chrome_options.add_argument("--headless=new")
+    chrome_options.add_argument("--headless")
     
     try:
         driver = webdriver.Chrome(options=chrome_options)
