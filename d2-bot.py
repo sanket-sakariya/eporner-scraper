@@ -14,13 +14,38 @@ def setup_chrome_driver():
     """Setup Chrome WebDriver with proper options for video downloading"""
     chrome_options = Options()
     
-    # Basic options
+    # Server-specific options
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--disable-extensions")
     chrome_options.add_argument("--disable-plugins")
     chrome_options.add_argument("--disable-images")
+    chrome_options.add_argument("--disable-web-security")
+    chrome_options.add_argument("--disable-features=VizDisplayCompositor")
+    chrome_options.add_argument("--remote-debugging-port=9222")
+    chrome_options.add_argument("--disable-background-timer-throttling")
+    chrome_options.add_argument("--disable-backgrounding-occluded-windows")
+    chrome_options.add_argument("--disable-renderer-backgrounding")
+    chrome_options.add_argument("--disable-field-trial-config")
+    chrome_options.add_argument("--disable-back-forward-cache")
+    chrome_options.add_argument("--disable-ipc-flooding-protection")
+    chrome_options.add_argument("--disable-hang-monitor")
+    chrome_options.add_argument("--disable-prompt-on-repost")
+    chrome_options.add_argument("--disable-sync")
+    chrome_options.add_argument("--disable-translate")
+    chrome_options.add_argument("--disable-logging")
+    chrome_options.add_argument("--disable-default-apps")
+    chrome_options.add_argument("--disable-background-networking")
+    chrome_options.add_argument("--disable-component-extensions-with-background-pages")
+    chrome_options.add_argument("--disable-client-side-phishing-detection")
+    chrome_options.add_argument("--disable-component-update")
+    chrome_options.add_argument("--disable-domain-reliability")
+    chrome_options.add_argument("--disable-features=TranslateUI")
+    chrome_options.add_argument("--disable-features=BlinkGenPropertyTrees")
+    chrome_options.add_argument("--single-process")
+    chrome_options.add_argument("--no-first-run")
+    chrome_options.add_argument("--no-default-browser-check")
     chrome_options.add_argument("--disable-javascript")  # We don't need JS for direct MP4 downloads
     
     # User agent
@@ -31,18 +56,24 @@ def setup_chrome_driver():
         "download.default_directory": os.path.abspath("downloads"),
         "download.prompt_for_download": False,
         "download.directory_upgrade": True,
-        "safebrowsing.enabled": True,
+        "safebrowsing.enabled": False,
         "safebrowsing.disable_download_protection": True,
         "profile.default_content_settings.popups": 0,
-        "profile.default_content_setting_values.notifications": 2
+        "profile.default_content_setting_values.notifications": 2,
+        "profile.default_content_setting_values.media_stream": 2,
+        "profile.default_content_setting_values.geolocation": 2,
+        "profile.default_content_setting_values.camera": 2,
+        "profile.default_content_setting_values.microphone": 2
     }
     chrome_options.add_experimental_option("prefs", prefs)
     
-    # Headless mode (comment out if you want to see the browser)
-    chrome_options.add_argument("--headless")
+    # Headless mode for server
+    chrome_options.add_argument("--headless=new")
     
     try:
         driver = webdriver.Chrome(options=chrome_options)
+        driver.set_page_load_timeout(60)
+        driver.implicitly_wait(10)
         return driver
     except WebDriverException as e:
         print(f"Failed to create Chrome driver: {e}")
@@ -202,61 +233,115 @@ def download_mp4_files():
                     success = True
                     continue
                 
-                # Use Selenium to download the MP4 file
-                print("Using Selenium browser automation for download...")
+                # Try Selenium first, fallback to requests if it fails
+                selenium_success = False
                 
-                # Get list of files before download
-                files_before = get_downloaded_files_before_download(download_dir)
-                
-                # Navigate to the MP4 URL
-                driver.get(url)
-                
-                # Wait for download to start and complete
-                print("Waiting for download to start...")
-                download_started = False
-                downloaded_filename = None
-                downloaded_size = 0
-                
-                # Monitor for new files for up to 30 seconds
-                for attempt in range(30):
-                    time.sleep(1)
+                try:
+                    # Use Selenium to download the MP4 file
+                    print("Using Selenium browser automation for download...")
                     
-                    # Check for new files
-                    new_filename, new_size = find_new_downloaded_file(files_before, download_dir, video_id)
+                    # Get list of files before download
+                    files_before = get_downloaded_files_before_download(download_dir)
                     
-                    if new_filename and new_size > 0:
-                        download_started = True
-                        downloaded_filename = new_filename
-                        downloaded_size = new_size
-                        print(f"✓ Download detected: {downloaded_filename} ({downloaded_size:,} bytes)")
-                        break
-                
-                if download_started:
-                    # Wait for download to complete by monitoring file size
-                    print("Waiting for download to complete...")
-                    initial_size = downloaded_size
-                    stable_count = 0
+                    # Navigate to the MP4 URL
+                    driver.get(url)
                     
-                    while True:
-                        try:
-                            current_size = os.path.getsize(os.path.join(download_dir, downloaded_filename))
-                            if current_size == initial_size:
-                                stable_count += 1
-                                if stable_count >= 3:  # File size stable for 3 seconds
-                                    break
-                            else:
-                                stable_count = 0
-                                initial_size = current_size
-                        except:
-                            pass
+                    # Wait for download to start and complete
+                    print("Waiting for download to start...")
+                    download_started = False
+                    downloaded_filename = None
+                    downloaded_size = 0
+                    
+                    # Monitor for new files for up to 30 seconds
+                    for attempt in range(30):
                         time.sleep(1)
+                        
+                        # Check for new files
+                        new_filename, new_size = find_new_downloaded_file(files_before, download_dir, video_id)
+                        
+                        if new_filename and new_size > 0:
+                            download_started = True
+                            downloaded_filename = new_filename
+                            downloaded_size = new_size
+                            print(f"✓ Download detected: {downloaded_filename} ({downloaded_size:,} bytes)")
+                            break
                     
-                    final_size = os.path.getsize(os.path.join(download_dir, downloaded_filename))
-                    print(f"✓ Download completed: {downloaded_filename} ({final_size:,} bytes)")
-                    success = True
-                else:
-                    print(f"✗ Download failed to start for: {url}")
-                    raise Exception("Download did not start")
+                    if download_started:
+                        # Wait for download to complete by monitoring file size
+                        print("Waiting for download to complete...")
+                        initial_size = downloaded_size
+                        stable_count = 0
+                        
+                        while True:
+                            try:
+                                current_size = os.path.getsize(os.path.join(download_dir, downloaded_filename))
+                                if current_size == initial_size:
+                                    stable_count += 1
+                                    if stable_count >= 3:  # File size stable for 3 seconds
+                                        break
+                                else:
+                                    stable_count = 0
+                                    initial_size = current_size
+                            except:
+                                pass
+                            time.sleep(1)
+                        
+                        final_size = os.path.getsize(os.path.join(download_dir, downloaded_filename))
+                        print(f"✓ Download completed: {downloaded_filename} ({final_size:,} bytes)")
+                        selenium_success = True
+                        success = True
+                    else:
+                        print(f"✗ Selenium download failed to start for: {url}")
+                        raise Exception("Selenium download did not start")
+                        
+                except Exception as selenium_error:
+                    print(f"Selenium failed: {selenium_error}")
+                    print("Trying fallback method with requests...")
+                    
+                    # Fallback to requests method
+                    try:
+                        headers = {
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                            "Accept": "video/mp4,video/*,*/*;q=0.9",
+                            "Accept-Language": "en-US,en;q=0.9",
+                            "Accept-Encoding": "identity",
+                            "Connection": "keep-alive",
+                            "Referer": "https://www.eporner.com/",
+                            "Sec-Fetch-Dest": "video",
+                            "Sec-Fetch-Mode": "no-cors",
+                            "Sec-Fetch-Site": "same-origin",
+                        }
+                        
+                        response = requests.get(url, headers=headers, stream=True, timeout=30, allow_redirects=True)
+                        response.raise_for_status()
+                        
+                        # Check if we got HTML content instead of video
+                        content_type = response.headers.get('content-type', '').lower()
+                        if 'text/html' in content_type or 'application/json' in content_type:
+                            print("Received HTML/JSON instead of video")
+                            raise Exception("Got HTML content")
+                        
+                        # Get file size for progress tracking
+                        total_size = int(response.headers.get('content-length', 0))
+                        
+                        with open(filepath, 'wb') as f:
+                            downloaded = 0
+                            for chunk in response.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                                    downloaded += len(chunk)
+                                    
+                                    # Show progress
+                                    if total_size > 0:
+                                        progress = (downloaded / total_size) * 100
+                                        print(f"\rProgress: {progress:.1f}% ({downloaded}/{total_size} bytes)", end="", flush=True)
+                        
+                        print(f"\n✓ Downloaded via requests: {filename}")
+                        success = True
+                        
+                    except Exception as requests_error:
+                        print(f"Requests fallback also failed: {requests_error}")
+                        raise Exception("Both Selenium and requests methods failed")
                 
                 # Small delay between downloads
                 time.sleep(2)
