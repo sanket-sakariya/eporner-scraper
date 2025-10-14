@@ -174,12 +174,30 @@ def download_mp4_files():
     
     try:
         # Set page load timeout
-        driver.set_page_load_timeout(30)
+        driver.set_page_load_timeout(60)
         
         # First, visit eporner.com to establish session
         print("Establishing session with eporner.com...")
         driver.get("https://www.eporner.com/")
-        time.sleep(3)  # Wait for page to load
+        time.sleep(5)  # Wait for page to load
+        
+        # Try to interact with the page to establish proper session
+        try:
+            # Look for and click any "Accept" or "Continue" buttons
+            accept_buttons = driver.find_elements(By.XPATH, "//button[contains(text(), 'Accept') or contains(text(), 'Continue') or contains(text(), 'OK')]")
+            for button in accept_buttons:
+                try:
+                    button.click()
+                    time.sleep(2)
+                except:
+                    pass
+        except:
+            pass
+        
+        # Navigate to a video page to establish proper session
+        print("Establishing video session...")
+        driver.get("https://www.eporner.com/video/IL7JTGmJ6Jo/friends-enjoying-with-indian-girlfriend-in-a-hotel-room/")
+        time.sleep(5)
         
         print("Session established successfully!")
         
@@ -298,27 +316,45 @@ def download_mp4_files():
                     print(f"Selenium failed: {selenium_error}")
                     print("Trying fallback method with requests...")
                     
-                    # Fallback to requests method
+                    # Fallback to requests method with cookies from Selenium
                     try:
+                        # Get cookies from Selenium session
+                        selenium_cookies = driver.get_cookies()
+                        cookie_dict = {}
+                        for cookie in selenium_cookies:
+                            cookie_dict[cookie['name']] = cookie['value']
+                        
                         headers = {
                             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                             "Accept": "video/mp4,video/*,*/*;q=0.9",
                             "Accept-Language": "en-US,en;q=0.9",
                             "Accept-Encoding": "identity",
                             "Connection": "keep-alive",
-                            "Referer": "https://www.eporner.com/",
+                            "Referer": "https://www.eporner.com/video/IL7JTGmJ6Jo/friends-enjoying-with-indian-girlfriend-in-a-hotel-room/",
                             "Sec-Fetch-Dest": "video",
                             "Sec-Fetch-Mode": "no-cors",
                             "Sec-Fetch-Site": "same-origin",
+                            "Origin": "https://www.eporner.com",
                         }
                         
-                        response = requests.get(url, headers=headers, stream=True, timeout=30, allow_redirects=True)
+                        # Create session with cookies
+                        session = requests.Session()
+                        session.headers.update(headers)
+                        
+                        # Add cookies to session
+                        for name, value in cookie_dict.items():
+                            session.cookies.set(name, value)
+                        
+                        print("Attempting download with session cookies...")
+                        response = session.get(url, stream=True, timeout=30, allow_redirects=True)
                         response.raise_for_status()
                         
                         # Check if we got HTML content instead of video
                         content_type = response.headers.get('content-type', '').lower()
                         if 'text/html' in content_type or 'application/json' in content_type:
                             print("Received HTML/JSON instead of video")
+                            print(f"Content-Type: {content_type}")
+                            print(f"Response preview: {response.text[:200]}...")
                             raise Exception("Got HTML content")
                         
                         # Get file size for progress tracking
@@ -341,7 +377,40 @@ def download_mp4_files():
                         
                     except Exception as requests_error:
                         print(f"Requests fallback also failed: {requests_error}")
-                        raise Exception("Both Selenium and requests methods failed")
+                        
+                        # Try one more method - direct wget/curl approach
+                        print("Trying final fallback method...")
+                        try:
+                            import subprocess
+                            import shutil
+                            
+                            # Check if wget is available
+                            if shutil.which("wget"):
+                                print("Using wget for download...")
+                                cmd = [
+                                    "wget",
+                                    "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                    "--referer=https://www.eporner.com/",
+                                    "--header=Accept: video/mp4,video/*,*/*;q=0.9",
+                                    "--header=Accept-Language: en-US,en;q=0.9",
+                                    "--header=Connection: keep-alive",
+                                    "-O", filepath,
+                                    url
+                                ]
+                                
+                                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                                if result.returncode == 0 and os.path.exists(filepath) and os.path.getsize(filepath) > 1024:
+                                    print(f"✓ Downloaded via wget: {filename}")
+                                    success = True
+                                else:
+                                    print(f"wget failed: {result.stderr}")
+                                    raise Exception("wget download failed")
+                            else:
+                                raise Exception("wget not available")
+                                
+                        except Exception as wget_error:
+                            print(f"Final fallback also failed: {wget_error}")
+                            raise Exception("All download methods failed")
                 
                 # Small delay between downloads
                 time.sleep(2)
