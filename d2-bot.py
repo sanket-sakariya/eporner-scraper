@@ -36,10 +36,15 @@ def download_mp4_files():
         "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                        "AppleWebKit/537.36 (KHTML, like Gecko) "
                        "Chrome/120.0.0.0 Safari/537.36"),
-        "Accept": "*/*",
+        "Accept": "video/mp4,video/*,*/*;q=0.9",
         "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "identity",
         "Connection": "keep-alive",
         "Referer": "https://www.eporner.com/",
+        "Sec-Fetch-Dest": "video",
+        "Sec-Fetch-Mode": "no-cors",
+        "Sec-Fetch-Site": "same-origin",
+        "Range": "bytes=0-",
     }
     
     # Create session with retry strategy for direct downloads
@@ -106,25 +111,91 @@ def download_mp4_files():
                     # This is a direct MP4 download link - use requests
                     print("Using direct download method for MP4 link...")
                     
-                    response = session.get(url, stream=True, timeout=30)
-                    response.raise_for_status()
+                    # Try different approaches to get the actual video file
+                    success_download = False
                     
-                    # Get file size for progress tracking
-                    total_size = int(response.headers.get('content-length', 0))
+                    # Method 1: Try with Range header
+                    try:
+                        response = session.get(url, stream=True, timeout=30, allow_redirects=True)
+                        response.raise_for_status()
+                        
+                        # Check if we got HTML content instead of video
+                        content_type = response.headers.get('content-type', '').lower()
+                        if 'text/html' in content_type or 'application/json' in content_type:
+                            print("Received HTML/JSON instead of video, trying alternative method...")
+                            raise requests.exceptions.RequestException("Got HTML content")
+                        
+                        # Check first few bytes to see if it's HTML
+                        first_chunk = next(response.iter_content(chunk_size=1024), b'')
+                        if first_chunk.startswith(b'<') or first_chunk.startswith(b'{'):
+                            print("Detected HTML/JSON content, trying alternative method...")
+                            raise requests.exceptions.RequestException("Got HTML content")
+                        
+                        # Reset the response for actual download
+                        response = session.get(url, stream=True, timeout=30, allow_redirects=True)
+                        response.raise_for_status()
+                        
+                        # Get file size for progress tracking
+                        total_size = int(response.headers.get('content-length', 0))
+                        
+                        with open(filepath, 'wb') as f:
+                            downloaded = 0
+                            for chunk in response.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                                    downloaded += len(chunk)
+                                    
+                                    # Show progress
+                                    if total_size > 0:
+                                        progress = (downloaded / total_size) * 100
+                                        print(f"\rProgress: {progress:.1f}% ({downloaded}/{total_size} bytes)", end="", flush=True)
+                        
+                        print(f"\n✓ Downloaded: {filename}")
+                        success_download = True
+                        
+                    except requests.exceptions.RequestException as e:
+                        print(f"Method 1 failed: {e}")
+                        
+                        # Method 2: Try without Range header
+                        try:
+                            print("Trying without Range header...")
+                            headers_no_range = headers.copy()
+                            headers_no_range.pop('Range', None)
+                            
+                            response = session.get(url, stream=True, timeout=30, allow_redirects=True, headers=headers_no_range)
+                            response.raise_for_status()
+                            
+                            # Check content type again
+                            content_type = response.headers.get('content-type', '').lower()
+                            if 'text/html' in content_type or 'application/json' in content_type:
+                                print("Still getting HTML/JSON, trying with different headers...")
+                                raise requests.exceptions.RequestException("Still getting HTML content")
+                            
+                            # Get file size for progress tracking
+                            total_size = int(response.headers.get('content-length', 0))
+                            
+                            with open(filepath, 'wb') as f:
+                                downloaded = 0
+                                for chunk in response.iter_content(chunk_size=8192):
+                                    if chunk:
+                                        f.write(chunk)
+                                        downloaded += len(chunk)
+                                        
+                                        # Show progress
+                                        if total_size > 0:
+                                            progress = (downloaded / total_size) * 100
+                                            print(f"\rProgress: {progress:.1f}% ({downloaded}/{total_size} bytes)", end="", flush=True)
+                            
+                            print(f"\n✓ Downloaded: {filename}")
+                            success_download = True
+                            
+                        except requests.exceptions.RequestException as e2:
+                            print(f"Method 2 failed: {e2}")
+                            print("Both direct download methods failed, skipping this URL...")
+                            raise e2
                     
-                    with open(filepath, 'wb') as f:
-                        downloaded = 0
-                        for chunk in response.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                                downloaded += len(chunk)
-                                
-                                # Show progress
-                                if total_size > 0:
-                                    progress = (downloaded / total_size) * 100
-                                    print(f"\rProgress: {progress:.1f}% ({downloaded}/{total_size} bytes)", end="", flush=True)
-                    
-                    print(f"\n✓ Downloaded: {filename}")
+                    if not success_download:
+                        raise requests.exceptions.RequestException("All download methods failed")
                     
                 else:
                     # This is a video page URL - use yt-dlp
