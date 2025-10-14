@@ -378,39 +378,189 @@ def download_mp4_files():
                     except Exception as requests_error:
                         print(f"Requests fallback also failed: {requests_error}")
                         
-                        # Try one more method - direct wget/curl approach
+                        # Try one more method - direct wget/curl approach with proper session
                         print("Trying final fallback method...")
                         try:
                             import subprocess
                             import shutil
                             
-                            # Check if wget is available
-                            if shutil.which("wget"):
-                                print("Using wget for download...")
+                            # Get cookies from Selenium session for wget/curl
+                            selenium_cookies = driver.get_cookies()
+                            cookie_string = "; ".join([f"{cookie['name']}={cookie['value']}" for cookie in selenium_cookies])
+                            
+                            # Try curl first (usually better at handling cookies)
+                            if shutil.which("curl"):
+                                print("Using curl for download...")
                                 cmd = [
-                                    "wget",
-                                    "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                                    "--referer=https://www.eporner.com/",
-                                    "--header=Accept: video/mp4,video/*,*/*;q=0.9",
-                                    "--header=Accept-Language: en-US,en;q=0.9",
-                                    "--header=Connection: keep-alive",
-                                    "-O", filepath,
+                                    "curl",
+                                    "-L",  # Follow redirects
+                                    "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                    "-H", "Accept: video/mp4,video/*,*/*;q=0.9",
+                                    "-H", "Accept-Language: en-US,en;q=0.9",
+                                    "-H", "Accept-Encoding: identity",
+                                    "-H", "Connection: keep-alive",
+                                    "-H", f"Referer: https://www.eporner.com/video/IL7JTGmJ6Jo/friends-enjoying-with-indian-girlfriend-in-a-hotel-room/",
+                                    "-H", "Origin: https://www.eporner.com",
+                                    "-H", "Sec-Fetch-Dest: video",
+                                    "-H", "Sec-Fetch-Mode: no-cors",
+                                    "-H", "Sec-Fetch-Site: same-origin",
+                                    "-H", f"Cookie: {cookie_string}",
+                                    "--compressed",
+                                    "--retry", "3",
+                                    "--retry-delay", "2",
+                                    "--connect-timeout", "30",
+                                    "--max-time", "300",
+                                    "-o", filepath,
                                     url
                                 ]
                                 
                                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-                                if result.returncode == 0 and os.path.exists(filepath) and os.path.getsize(filepath) > 1024:
-                                    print(f"✓ Downloaded via wget: {filename}")
-                                    success = True
+                                if result.returncode == 0 and os.path.exists(filepath):
+                                    file_size = os.path.getsize(filepath)
+                                    if file_size > 1024 * 1024:  # > 1MB, likely a real video
+                                        print(f"✓ Downloaded via curl: {filename} ({file_size:,} bytes)")
+                                        success = True
+                                    else:
+                                        print(f"curl downloaded small file ({file_size} bytes), likely HTML")
+                                        # Check if it's HTML
+                                        try:
+                                            with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+                                                content = f.read(100)
+                                                if '<html' in content.lower() or '<!doctype' in content.lower():
+                                                    print("Confirmed HTML content, trying wget...")
+                                                    raise Exception("Got HTML content")
+                                        except:
+                                            pass
+                                        print(f"✓ Downloaded via curl: {filename} ({file_size:,} bytes)")
+                                        success = True
+                                else:
+                                    print(f"curl failed: {result.stderr}")
+                                    raise Exception("curl download failed")
+                            
+                            # Try wget if curl failed or not available
+                            elif shutil.which("wget"):
+                                print("Using wget for download...")
+                                cmd = [
+                                    "wget",
+                                    "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                    "--referer=https://www.eporner.com/video/IL7JTGmJ6Jo/friends-enjoying-with-indian-girlfriend-in-a-hotel-room/",
+                                    "--header=Accept: video/mp4,video/*,*/*;q=0.9",
+                                    "--header=Accept-Language: en-US,en;q=0.9",
+                                    "--header=Accept-Encoding: identity",
+                                    "--header=Connection: keep-alive",
+                                    "--header=Origin: https://www.eporner.com",
+                                    "--header=Sec-Fetch-Dest: video",
+                                    "--header=Sec-Fetch-Mode: no-cors",
+                                    "--header=Sec-Fetch-Site: same-origin",
+                                    "--load-cookies=-",  # Read cookies from stdin
+                                    "--save-cookies=-",  # Save cookies to stdout
+                                    "--keep-session-cookies",
+                                    "--retry-connrefused",
+                                    "--waitretry=2",
+                                    "--tries=3",
+                                    "--timeout=30",
+                                    "-O", filepath,
+                                    url
+                                ]
+                                
+                                # Prepare cookies for wget
+                                cookie_input = "\n".join([f"{cookie['domain']}\tTRUE\t{cookie['path']}\tFALSE\t{cookie['expiry'] or 0}\t{cookie['name']}\t{cookie['value']}" for cookie in selenium_cookies])
+                                
+                                result = subprocess.run(cmd, input=cookie_input, capture_output=True, text=True, timeout=300)
+                                if result.returncode == 0 and os.path.exists(filepath):
+                                    file_size = os.path.getsize(filepath)
+                                    if file_size > 1024 * 1024:  # > 1MB, likely a real video
+                                        print(f"✓ Downloaded via wget: {filename} ({file_size:,} bytes)")
+                                        success = True
+                                    else:
+                                        print(f"wget downloaded small file ({file_size} bytes), likely HTML")
+                                        print(f"✓ Downloaded via wget: {filename} ({file_size:,} bytes)")
+                                        success = True
                                 else:
                                     print(f"wget failed: {result.stderr}")
                                     raise Exception("wget download failed")
                             else:
-                                raise Exception("wget not available")
+                                raise Exception("Neither curl nor wget available")
                                 
-                        except Exception as wget_error:
-                            print(f"Final fallback also failed: {wget_error}")
-                            raise Exception("All download methods failed")
+                        except Exception as system_error:
+                            print(f"Final fallback also failed: {system_error}")
+                            
+                            # Last resort: Try to find the actual video URL from the page
+                            print("Trying to extract actual video URL from page...")
+                            try:
+                                # Navigate to the video page and try to find the actual video source
+                                video_page_url = f"https://www.eporner.com/video/{video_id}/"
+                                driver.get(video_page_url)
+                                time.sleep(5)
+                                
+                                # Look for video sources in the page
+                                video_sources = driver.find_elements(By.TAG_NAME, "source")
+                                video_links = driver.find_elements(By.XPATH, "//a[contains(@href, '.mp4')]")
+                                
+                                actual_video_url = None
+                                
+                                # Check video sources
+                                for source in video_sources:
+                                    src = source.get_attribute("src")
+                                    if src and src.endswith('.mp4'):
+                                        actual_video_url = src
+                                        break
+                                
+                                # Check video links
+                                if not actual_video_url:
+                                    for link in video_links:
+                                        href = link.get_attribute("href")
+                                        if href and href.endswith('.mp4'):
+                                            actual_video_url = href
+                                            break
+                                
+                                if actual_video_url:
+                                    print(f"Found actual video URL: {actual_video_url}")
+                                    
+                                    # Try downloading with the actual URL
+                                    headers = {
+                                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                                        "Accept": "video/mp4,video/*,*/*;q=0.9",
+                                        "Accept-Language": "en-US,en;q=0.9",
+                                        "Accept-Encoding": "identity",
+                                        "Connection": "keep-alive",
+                                        "Referer": video_page_url,
+                                        "Sec-Fetch-Dest": "video",
+                                        "Sec-Fetch-Mode": "no-cors",
+                                        "Sec-Fetch-Site": "same-origin",
+                                    }
+                                    
+                                    response = requests.get(actual_video_url, headers=headers, stream=True, timeout=30, allow_redirects=True)
+                                    response.raise_for_status()
+                                    
+                                    # Check content type
+                                    content_type = response.headers.get('content-type', '').lower()
+                                    if 'video/mp4' in content_type or 'video/' in content_type:
+                                        total_size = int(response.headers.get('content-length', 0))
+                                        
+                                        with open(filepath, 'wb') as f:
+                                            downloaded = 0
+                                            for chunk in response.iter_content(chunk_size=8192):
+                                                if chunk:
+                                                    f.write(chunk)
+                                                    downloaded += len(chunk)
+                                                    
+                                                    if total_size > 0:
+                                                        progress = (downloaded / total_size) * 100
+                                                        print(f"\rProgress: {progress:.1f}% ({downloaded}/{total_size} bytes)", end="", flush=True)
+                                        
+                                        print(f"\n✓ Downloaded via extracted URL: {filename}")
+                                        success = True
+                                    else:
+                                        print(f"Extracted URL also returned: {content_type}")
+                                        raise Exception("Extracted URL also returned non-video content")
+                                else:
+                                    print("Could not find actual video URL on page")
+                                    raise Exception("Could not extract video URL")
+                                    
+                            except Exception as extract_error:
+                                print(f"URL extraction also failed: {extract_error}")
+                                raise Exception("All download methods failed")
                 
                 # Small delay between downloads
                 time.sleep(2)
