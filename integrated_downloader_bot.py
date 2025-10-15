@@ -59,6 +59,11 @@ MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024 if MAX_FILE_SIZE_MB else None  # 
 DOWNLOAD_TIMEOUT = 600  # 10 minutes timeout for large files
 MAX_DOWNLOAD_ATTEMPTS = 5  # More attempts for large files
 
+# Quality modification settings
+MODIFY_QUALITY = True  # Set to False to disable quality modification
+QUALITY_FROM = "480"   # Quality to replace
+QUALITY_TO = "240"     # Quality to replace with
+
 # -------------------- CLASSES --------------------
 
 class IntegratedDownloaderBot:
@@ -91,6 +96,12 @@ class IntegratedDownloaderBot:
             logger.info(f"📏 File size limit: {self.human_size(MAX_FILE_SIZE)}")
         else:
             logger.info("📏 File size limit: None (no limit)")
+        
+        # Log quality modification settings
+        if MODIFY_QUALITY:
+            logger.info(f"🔄 Quality modification: {QUALITY_FROM}p → {QUALITY_TO}p")
+        else:
+            logger.info("🔄 Quality modification: Disabled")
         
         # Rotate User-Agents to avoid detection
         user_agents = [
@@ -664,8 +675,18 @@ class IntegratedDownloaderBot:
                         logger.warning(f"No MP4 or JPG links found for: {video_data['video_url']}")
                         continue
                     
-                    # Get MP4 URL (file size will be checked during download)
+                    # Get MP4 URL and modify quality from 480p to 240p
                     mp4_url = mp4_links[0]  # Get first MP4 link
+                    
+                    # Modify quality in URL for smaller file size
+                    if MODIFY_QUALITY and f"/{QUALITY_FROM}/" in mp4_url:
+                        original_url = mp4_url
+                        mp4_url = mp4_url.replace(f"/{QUALITY_FROM}/", f"/{QUALITY_TO}/")
+                        logger.info(f"🔄 Modified URL quality: {QUALITY_FROM}p → {QUALITY_TO}p")
+                        logger.info(f"📥 Original URL: {original_url}")
+                        logger.info(f"📥 Modified URL: {mp4_url}")
+                    else:
+                        logger.info(f"📥 Using original MP4 URL: {mp4_url}")
                     
                     # Test proxy with download URL
                     if USE_PROXY:
@@ -708,8 +729,13 @@ class IntegratedDownloaderBot:
                         self.cleanup_files(mp4_path, jpg_path)
                         continue
                     
-                    # Wait for DiskWala URL
-                    await asyncio.sleep(60)
+                    # Wait until a DiskWala URL is received (polling every 2s, timeout 5 min)
+                    diskwala_timeout = 300      # seconds
+                    diskwala_poll_interval = 2  # seconds
+                    waited = 0
+                    while not self.urls_found and waited < diskwala_timeout:
+                        await asyncio.sleep(diskwala_poll_interval)
+                        waited += diskwala_poll_interval
                     
                     # Check if we got a DiskWala URL
                     if self.urls_found:
