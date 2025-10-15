@@ -681,7 +681,9 @@ class IntegratedDownloaderBot:
                     # Modify quality in URL for smaller file size
                     if MODIFY_QUALITY and f"/{QUALITY_FROM}/" in mp4_url:
                         original_url = mp4_url
+                        # Replace both path and filename
                         mp4_url = mp4_url.replace(f"/{QUALITY_FROM}/", f"/{QUALITY_TO}/")
+                        mp4_url = mp4_url.replace(f"-{QUALITY_FROM}p.mp4", f"-{QUALITY_TO}p.mp4")
                         logger.info(f"🔄 Modified URL quality: {QUALITY_FROM}p → {QUALITY_TO}p")
                         logger.info(f"📥 Original URL: {original_url}")
                         logger.info(f"📥 Modified URL: {mp4_url}")
