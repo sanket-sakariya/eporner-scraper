@@ -51,9 +51,16 @@ def setup_chrome_driver():
     # User agent
     chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
+    # Download configuration to prevent "Save As" popup
+    download_dir = os.path.abspath("downloads")
+    os.makedirs(download_dir, exist_ok=True)
+    chrome_options.add_argument(f"--download-directory={download_dir}")
+    chrome_options.add_argument("--disable-download-notification")
+    chrome_options.add_argument("--disable-popup-blocking")
+    
     # Download preferences
     prefs = {
-        "download.default_directory": os.path.abspath("downloads"),
+        "download.default_directory": download_dir,
         "download.prompt_for_download": False,
         "download.directory_upgrade": True,
         "safebrowsing.enabled": False,
@@ -63,7 +70,8 @@ def setup_chrome_driver():
         "profile.default_content_setting_values.media_stream": 2,
         "profile.default_content_setting_values.geolocation": 2,
         "profile.default_content_setting_values.camera": 2,
-        "profile.default_content_setting_values.microphone": 2
+        "profile.default_content_setting_values.microphone": 2,
+        "profile.default_content_setting_values.automatic_downloads": 1
     }
     chrome_options.add_experimental_option("prefs", prefs)
     

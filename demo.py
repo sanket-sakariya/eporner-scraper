@@ -293,6 +293,26 @@ def main():
     opts.add_argument("--disable-gpu")
     opts.add_argument("--headless=new")  # Force headless mode for server
     
+    # Download configuration to prevent "Save As" popup
+    import os
+    download_dir = os.path.join(os.getcwd(), "downloads")
+    os.makedirs(download_dir, exist_ok=True)
+    opts.add_argument(f"--download-directory={download_dir}")
+    opts.add_argument("--disable-download-notification")
+    opts.add_argument("--disable-popup-blocking")
+    opts.add_argument("--disable-prompt-on-repost")
+    
+    # Additional download preferences
+    prefs = {
+        "download.default_directory": download_dir,
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": True,
+        "profile.default_content_settings.popups": 0,
+        "profile.default_content_setting_values.automatic_downloads": 1
+    }
+    opts.add_experimental_option("prefs", prefs)
+    
     # Fix user data directory conflict with better isolation
     import tempfile
     import os
@@ -306,7 +326,7 @@ def main():
     opts.add_argument("--disable-web-security")
     opts.add_argument("--disable-extensions")
     opts.add_argument("--disable-plugins")
-    opts.add_argument("--disable-images")  # Speed up loading
+    # opts.add_argument("--disable-images")  # Speed up loading
     
     # Window and display options for server
     opts.add_argument("--window-size=1920,1080")
