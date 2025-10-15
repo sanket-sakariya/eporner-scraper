@@ -26,3 +26,9 @@ response = requests.get(
     cookies=cookies,
     headers=headers,
 )
+
+
+ip: 191.96.254.130
+port: 6177 
+usernmae: tjijutki
+password: 4vg93ifc50gnx

@@ -18,12 +18,20 @@ import time
 import os
 import shutil
 from pathlib import Path
+import zipfile
+import tempfile
 
 
 # ---------------- CONFIG ----------------
 VIDEO_PAGE_URL = "https://www.eporner.com/video-Ux4DafGxvAz/hidden-lust/"
 DOWNLOAD_URL = "https://www.eporner.com/dload/Ux4DafGxvAz/240/14177153-240p-av1.mp4?click=1"
 OUTPUT_FILENAME = "14177153-240p-av1.mp4"
+
+# Proxy configuration from dev.txt
+PROXY_IP = "191.96.254.130"
+PROXY_PORT = "6177"
+PROXY_USERNAME = "tjijutki"
+PROXY_PASSWORD = "4vg93ifc50gnx"
 # ----------------------------------------
 
 
@@ -48,6 +56,74 @@ def kill_existing_chrome_processes():
             print("[+] No existing Chrome processes found")
     except Exception as e:
         print(f"[!] Error killing Chrome processes: {e}")
+
+
+def create_proxy_auth_extension(proxy_host, proxy_port, proxy_username, proxy_password):
+    """Create a Chrome extension for proxy authentication."""
+    manifest_json = """
+    {
+        "version": "1.0.0",
+        "manifest_version": 2,
+        "name": "Chrome Proxy Auth",
+        "permissions": [
+            "proxy",
+            "tabs",
+            "unlimitedStorage",
+            "storage",
+            "<all_urls>",
+            "webRequest",
+            "webRequestBlocking"
+        ],
+        "background": {
+            "scripts": ["background.js"]
+        },
+        "minimum_chrome_version":"22.0.0"
+    }
+    """
+
+    background_js = f"""
+    var config = {{
+        mode: "fixed_servers",
+        rules: {{
+            singleProxy: {{
+                scheme: "http",
+                host: "{proxy_host}",
+                port: parseInt({proxy_port})
+            }},
+            bypassList: ["localhost"]
+        }}
+    }};
+
+    chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
+
+    function callbackFn(details) {{
+        return {{
+            authCredentials: {{
+                username: "{proxy_username}",
+                password: "{proxy_password}"
+            }}
+        }};
+    }}
+
+    chrome.webRequest.onAuthRequired.addListener(
+        callbackFn,
+        {{urls: ["<all_urls>"]}},
+        ['blocking']
+    );
+    """
+
+    # Create temporary directory for extension
+    extension_dir = tempfile.mkdtemp(prefix="proxy_auth_extension_")
+    
+    # Write manifest.json
+    with open(os.path.join(extension_dir, "manifest.json"), "w") as f:
+        f.write(manifest_json)
+    
+    # Write background.js
+    with open(os.path.join(extension_dir, "background.js"), "w") as f:
+        f.write(background_js)
+    
+    return extension_dir
 
 
 def check_chrome_installation():
@@ -126,6 +202,10 @@ def main():
     os.makedirs(download_dir, exist_ok=True)
     print(f"[+] Download directory: {download_dir}")
     
+    # Initialize variables for cleanup
+    extension_dir = None
+    temp_dir = None
+    
     # --- Setup Chrome with automatic download ---
     opts = Options()
     
@@ -135,6 +215,12 @@ def main():
     opts.add_argument("--disable-gpu")
     opts.add_argument("--headless=new")
     opts.add_argument("--window-size=1920,1080")
+    
+    # Create proxy authentication extension
+    print(f"[+] Creating proxy authentication extension...")
+    extension_dir = create_proxy_auth_extension(PROXY_IP, PROXY_PORT, PROXY_USERNAME, PROXY_PASSWORD)
+    opts.add_argument(f"--load-extension={extension_dir}")
+    print(f"[+] Using proxy: {PROXY_IP}:{PROXY_PORT} with authentication")
     
     # Configure automatic downloads (NO POPUPS)
     prefs = {
@@ -223,6 +309,14 @@ def main():
             print(f"[+] Cleaned up temp directory: {temp_dir}")
         except Exception as e:
             print(f"[!] Error cleaning up temp directory: {e}")
+        
+        # Cleanup extension directory
+        if extension_dir:
+            try:
+                shutil.rmtree(extension_dir)
+                print(f"[+] Cleaned up extension directory: {extension_dir}")
+            except Exception as e:
+                print(f"[!] Error cleaning up extension directory: {e}")
         
         # Cleanup download directory if empty
         try:
