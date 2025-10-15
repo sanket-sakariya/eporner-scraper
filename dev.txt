@@ -1,0 +1,28 @@
+import requests
+
+cookies = {
+    'PHPSESSID': '3aead98c24739b738100ece4e0d858fe',
+}
+
+headers = {
+    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'accept-language': 'en-US,en;q=0.9,id;q=0.8',
+    'priority': 'u=0, i',
+    'referer': 'https://www.eporner.com/',
+    'sec-ch-ua': '"Google Chrome";v="141", "Not?A_Brand";v="8", "Chromium";v="141"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'document',
+    'sec-fetch-mode': 'navigate',
+    'sec-fetch-site': 'same-site',
+    'sec-fetch-user': '?1',
+    'upgrade-insecure-requests': '1',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+    # 'cookie': 'PHPSESSID=3aead98c24739b738100ece4e0d858fe',
+}
+
+response = requests.get(
+    'https://vid-s1-c50-fr-cdn.eporner.com/v4/RHoM409xGK959hT_SVSsQQ/1760466383_47.11.115.5_500000/14330472-240p.mp4?click=1&dload=EPORNER.COM%20-%20[qwFQYLSJW2g]%20Mizoram%20Girl%20Hard%20Sex%20Mms%20College%20Boyfriend%20Ke%20Ghar%20Par.%20(240).mp4',
+    cookies=cookies,
+    headers=headers,
+)
