@@ -9,3 +9,4 @@ python-multipart==0.0.6
 telethon==1.34.0
 yt-dlp==2023.12.30
 selenium==4.15.2
+undetected-chromedriver==3.5.4

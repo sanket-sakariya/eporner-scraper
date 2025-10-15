@@ -1,24 +1,18 @@
 """
-Download an .mp4 file from eporner using Selenium with automatic download handling.
-- Opens the page in Chrome (via webdriver-manager)
-- Automatically handles download by configuring Chrome preferences
-- No manual "Save As" dialog needed
+Download an .mp4 file from eporner using undetected-chromedriver with residential proxy.
+- Uses undetected-chromedriver for better stealth and performance
+- Supports residential proxy with authentication
+- Faster and more reliable downloads
 """
 
-# pip install selenium webdriver-manager
+# pip install undetected-chromedriver requests
 
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
+import undetected_chromedriver as uc
+import requests
 import time
 import os
 import shutil
 from pathlib import Path
-import zipfile
 import tempfile
 
 
@@ -35,295 +29,185 @@ PROXY_PASSWORD = "4vg93ifc50gnx"
 # ----------------------------------------
 
 
-def kill_existing_chrome_processes():
-    """Kill any existing Chrome processes to prevent conflicts."""
-    import subprocess
-    import signal
-    
+def download_with_requests(download_url, output_filename, proxy_config):
+    """Download file using requests with proxy support."""
     try:
-        result = subprocess.run(['pgrep', '-f', 'chrome'], capture_output=True, text=True)
-        if result.returncode == 0 and result.stdout.strip():
-            pids = result.stdout.strip().split('\n')
-            print(f"[+] Found {len(pids)} existing Chrome processes, killing them...")
-            for pid in pids:
-                try:
-                    os.kill(int(pid), signal.SIGTERM)
-                    print(f"[+] Killed Chrome process {pid}")
-                except (ProcessLookupError, ValueError):
-                    pass
-            time.sleep(2)
-        else:
-            print("[+] No existing Chrome processes found")
+        print(f"[+] Downloading with requests: {download_url}")
+        
+        # Setup proxy for requests
+        proxies = {
+            'http': f'http://{proxy_config["username"]}:{proxy_config["password"]}@{proxy_config["ip"]}:{proxy_config["port"]}',
+            'https': f'http://{proxy_config["username"]}:{proxy_config["password"]}@{proxy_config["ip"]}:{proxy_config["port"]}'
+        }
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+            'Accept': 'video/mp4,video/*,*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.eporner.com/',
+        }
+        
+        response = requests.get(download_url, proxies=proxies, headers=headers, stream=True, timeout=30)
+        response.raise_for_status()
+        
+        # Get file size for progress tracking
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded_size = 0
+        
+        with open(output_filename, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded_size += len(chunk)
+                    
+                    # Show progress
+                    if total_size > 0:
+                        progress = (downloaded_size / total_size) * 100
+                        print(f"\r[+] Download progress: {progress:.1f}% ({downloaded_size / (1024*1024):.1f}MB / {total_size / (1024*1024):.1f}MB)", end='', flush=True)
+        
+        print(f"\n[✓] Download completed: {output_filename}")
+        return True
+        
     except Exception as e:
-        print(f"[!] Error killing Chrome processes: {e}")
-
-
-def create_proxy_auth_extension(proxy_host, proxy_port, proxy_username, proxy_password):
-    """Create a Chrome extension for proxy authentication."""
-    manifest_json = """
-    {
-        "version": "1.0.0",
-        "manifest_version": 2,
-        "name": "Chrome Proxy Auth",
-        "permissions": [
-            "proxy",
-            "tabs",
-            "unlimitedStorage",
-            "storage",
-            "<all_urls>",
-            "webRequest",
-            "webRequestBlocking"
-        ],
-        "background": {
-            "scripts": ["background.js"]
-        },
-        "minimum_chrome_version":"22.0.0"
-    }
-    """
-
-    background_js = f"""
-    var config = {{
-        mode: "fixed_servers",
-        rules: {{
-            singleProxy: {{
-                scheme: "http",
-                host: "{proxy_host}",
-                port: parseInt({proxy_port})
-            }},
-            bypassList: ["localhost"]
-        }}
-    }};
-
-    chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
-
-    function callbackFn(details) {{
-        return {{
-            authCredentials: {{
-                username: "{proxy_username}",
-                password: "{proxy_password}"
-            }}
-        }};
-    }}
-
-    chrome.webRequest.onAuthRequired.addListener(
-        callbackFn,
-        {{urls: ["<all_urls>"]}},
-        ['blocking']
-    );
-    """
-
-    # Create temporary directory for extension
-    extension_dir = tempfile.mkdtemp(prefix="proxy_auth_extension_")
-    
-    # Write manifest.json
-    with open(os.path.join(extension_dir, "manifest.json"), "w") as f:
-        f.write(manifest_json)
-    
-    # Write background.js
-    with open(os.path.join(extension_dir, "background.js"), "w") as f:
-        f.write(background_js)
-    
-    return extension_dir
-
-
-def check_chrome_installation():
-    """Check if Chrome is properly installed and accessible."""
-    import subprocess
-    
-    chrome_paths = [
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium-browser", 
-        "/usr/bin/chromium",
-        "/opt/google/chrome/chrome",
-        "/usr/local/bin/chrome"
-    ]
-    
-    chrome_found = False
-    for path in chrome_paths:
-        if shutil.which(path):
-            chrome_found = True
-            print(f"[+] Found Chrome at: {path}")
-            break
-    
-    if not chrome_found:
-        print("[!] Chrome not found in common locations")
-        print("[!] Please install Chrome or Chromium:")
-        print("    sudo apt update && sudo apt install -y google-chrome-stable")
+        print(f"\n[!] Error downloading with requests: {e}")
         return False
-    
+
+
+def test_proxy_connection(proxy_config):
+    """Test if proxy connection is working."""
     try:
-        result = subprocess.run([shutil.which("google-chrome") or shutil.which("chromium-browser"), "--version"], 
-                              capture_output=True, text=True, timeout=10)
-        if result.returncode == 0:
-            print(f"[+] Chrome version: {result.stdout.strip()}")
-    except Exception as e:
-        print(f"[!] Error checking Chrome version: {e}")
-    
-    return True
-
-
-def wait_for_download_complete(download_dir, timeout=300):
-    """Wait for download to complete (no .crdownload files)."""
-    print("[+] Waiting for download to complete...")
-    start_time = time.time()
-    
-    while time.time() - start_time < timeout:
-        # Check for .crdownload files (Chrome's temp download files)
-        crdownload_files = list(Path(download_dir).glob("*.crdownload"))
-        tmp_files = list(Path(download_dir).glob("*.tmp"))
+        print(f"[+] Testing proxy connection: {proxy_config['ip']}:{proxy_config['port']}")
         
-        if not crdownload_files and not tmp_files:
-            # Check if any files exist in download directory
-            files = [f for f in Path(download_dir).iterdir() if f.is_file()]
-            if files:
-                print(f"[✓] Download completed!")
-                return True
+        proxies = {
+            'http': f'http://{proxy_config["username"]}:{proxy_config["password"]}@{proxy_config["ip"]}:{proxy_config["port"]}',
+            'https': f'http://{proxy_config["username"]}:{proxy_config["password"]}@{proxy_config["ip"]}:{proxy_config["port"]}'
+        }
         
-        time.sleep(1)
-        if int(time.time() - start_time) % 10 == 0:
-            print(f"[+] Still downloading... ({int(time.time() - start_time)}s elapsed)")
-    
-    print("[!] Download timeout reached")
-    return False
-
-
-def main():
-    # Check Chrome installation first
-    print("[+] Checking Chrome installation...")
-    if not check_chrome_installation():
-        return False
-    
-    # Kill any existing Chrome processes
-    print("[+] Cleaning up existing Chrome processes...")
-    kill_existing_chrome_processes()
-    
-    # Setup download directory
-    download_dir = os.path.join(os.getcwd(), "downloads")
-    os.makedirs(download_dir, exist_ok=True)
-    print(f"[+] Download directory: {download_dir}")
-    
-    # Initialize variables for cleanup
-    extension_dir = None
-    temp_dir = None
-    
-    # --- Setup Chrome with automatic download ---
-    opts = Options()
-    
-    # Essential options for headless operation
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-gpu")
-    opts.add_argument("--headless=new")
-    opts.add_argument("--window-size=1920,1080")
-    
-    # Create proxy authentication extension
-    print(f"[+] Creating proxy authentication extension...")
-    extension_dir = create_proxy_auth_extension(PROXY_IP, PROXY_PORT, PROXY_USERNAME, PROXY_PASSWORD)
-    opts.add_argument(f"--load-extension={extension_dir}")
-    print(f"[+] Using proxy: {PROXY_IP}:{PROXY_PORT} with authentication")
-    
-    # Configure automatic downloads (NO POPUPS)
-    prefs = {
-        "download.default_directory": download_dir,
-        "download.prompt_for_download": False,  # Disable "Save As" dialog
-        "download.directory_upgrade": True,
-        "safebrowsing.enabled": False,  # Disable safe browsing warnings
-        "profile.default_content_settings.popups": 0,
-        "profile.default_content_setting_values.automatic_downloads": 1,
-        "plugins.always_open_pdf_externally": True,  # Download PDFs instead of viewing
-    }
-    opts.add_experimental_option("prefs", prefs)
-    
-    # Create unique temp directory for user data
-    import tempfile
-    import uuid
-    temp_dir = tempfile.mkdtemp(prefix=f"chrome_session_{uuid.uuid4().hex[:8]}_")
-    opts.add_argument(f"--user-data-dir={temp_dir}")
-    
-    # Additional options
-    opts.add_argument("--disable-extensions")
-    opts.add_argument("--disable-web-security")
-    opts.add_argument("--log-level=3")
-    opts.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
-    driver = None
-    try:
-        # Initialize Chrome driver
-        print(f"[+] Creating Chrome session...")
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=opts)
-        print(f"[+] Chrome driver started successfully!")
-        
-        # Navigate to the video page first (optional, for context)
-        print(f"[+] Navigating to video page: {VIDEO_PAGE_URL}")
-        driver.get(VIDEO_PAGE_URL)
-        time.sleep(3)
-        print(f"[+] Page loaded successfully")
-        
-        # Now navigate directly to download URL
-        print(f"[+] Starting download from: {DOWNLOAD_URL}")
-        driver.get(DOWNLOAD_URL)
-        
-        # Wait for download to complete
-        if wait_for_download_complete(download_dir, timeout=300):
-            # Find the downloaded file
-            downloaded_files = [f for f in Path(download_dir).iterdir() if f.is_file() and f.suffix == '.mp4']
-            
-            if downloaded_files:
-                downloaded_file = downloaded_files[0]
-                final_path = os.path.join(os.getcwd(), OUTPUT_FILENAME)
-                
-                # Move file to current directory with desired name
-                shutil.move(str(downloaded_file), final_path)
-                print(f"[✓] Video downloaded successfully: {final_path}")
-                
-                # Show file size
-                file_size = os.path.getsize(final_path)
-                print(f"[+] File size: {file_size / (1024*1024):.2f} MB")
-                return True
-            else:
-                print("[!] No MP4 file found in download directory")
-                return False
+        response = requests.get('http://httpbin.org/ip', proxies=proxies, timeout=10)
+        if response.status_code == 200:
+            print(f"[✓] Proxy connection successful")
+            return True
         else:
-            print("[!] Download did not complete in time")
+            print(f"[!] Proxy test failed with status: {response.status_code}")
             return False
             
     except Exception as e:
-        print(f"[!] Error during download: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"[!] Proxy connection test failed: {e}")
+        return False
+
+
+def main():
+    print("[+] Starting eporner video downloader with residential proxy...")
+    
+    # Setup proxy configuration
+    proxy_config = {
+        "ip": PROXY_IP,
+        "port": PROXY_PORT,
+        "username": PROXY_USERNAME,
+        "password": PROXY_PASSWORD
+    }
+    
+    print(f"[+] Using residential proxy: {PROXY_IP}:{PROXY_PORT}")
+    
+    # Test proxy connection first
+    if not test_proxy_connection(proxy_config):
+        print("[!] Proxy connection test failed. Please check your proxy settings.")
+        return False
+    
+    # Setup output file path
+    output_path = os.path.join(os.getcwd(), OUTPUT_FILENAME)
+    
+    # Try downloading with requests (faster and more reliable)
+    print(f"[+] Attempting direct download with requests...")
+    if download_with_requests(DOWNLOAD_URL, output_path, proxy_config):
+        # Verify file was downloaded
+        if os.path.exists(output_path):
+            file_size = os.path.getsize(output_path)
+            print(f"[✓] Video downloaded successfully: {output_path}")
+            print(f"[+] File size: {file_size / (1024*1024):.2f} MB")
+            return True
+        else:
+            print("[!] Download completed but file not found")
+            return False
+    else:
+        print("[!] Direct download failed, trying with undetected-chromedriver...")
+        return download_with_chrome(DOWNLOAD_URL, output_path, proxy_config)
+
+
+def download_with_chrome(download_url, output_filename, proxy_config):
+    """Fallback method using undetected-chromedriver."""
+    driver = None
+    temp_dir = None
+    
+    try:
+        print(f"[+] Setting up undetected-chromedriver...")
+        
+        # Create temp directory for Chrome user data
+        temp_dir = tempfile.mkdtemp(prefix="chrome_session_")
+        
+        # Setup Chrome options
+        options = uc.ChromeOptions()
+        options.add_argument(f"--user-data-dir={temp_dir}")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--headless=new")
+        
+        # Setup proxy
+        proxy_server = f"{proxy_config['ip']}:{proxy_config['port']}"
+        options.add_argument(f"--proxy-server=http://{proxy_server}")
+        
+        # Setup download preferences
+        prefs = {
+            "download.default_directory": os.path.dirname(output_filename),
+            "download.prompt_for_download": False,
+            "download.directory_upgrade": True,
+            "safebrowsing.enabled": False,
+        }
+        options.add_experimental_option("prefs", prefs)
+        
+        # Initialize driver
+        driver = uc.Chrome(options=options)
+        print(f"[+] Chrome driver started with proxy: {proxy_server}")
+        
+        # Navigate to download URL
+        print(f"[+] Navigating to download URL...")
+        driver.get(download_url)
+        
+        # Wait for download to start and complete
+        time.sleep(5)  # Give it time to start
+        
+        # Check if download completed
+        download_dir = os.path.dirname(output_filename)
+        downloaded_files = [f for f in Path(download_dir).iterdir() if f.is_file() and f.suffix == '.mp4']
+        
+        if downloaded_files:
+            downloaded_file = downloaded_files[0]
+            shutil.move(str(downloaded_file), output_filename)
+            print(f"[✓] Video downloaded successfully: {output_filename}")
+            return True
+        else:
+            print("[!] No MP4 file found after download attempt")
+            return False
+            
+    except Exception as e:
+        print(f"[!] Error during Chrome download: {e}")
         return False
         
     finally:
-        # Cleanup
         if driver:
             try:
                 driver.quit()
-                print("[+] Chrome driver closed successfully")
-            except Exception as e:
-                print(f"[!] Error closing Chrome driver: {e}")
+                print("[+] Chrome driver closed")
+            except:
+                pass
         
-        # Cleanup temp directory
-        try:
-            shutil.rmtree(temp_dir)
-            print(f"[+] Cleaned up temp directory: {temp_dir}")
-        except Exception as e:
-            print(f"[!] Error cleaning up temp directory: {e}")
-        
-        # Cleanup extension directory
-        if extension_dir:
+        if temp_dir:
             try:
-                shutil.rmtree(extension_dir)
-                print(f"[+] Cleaned up extension directory: {extension_dir}")
-            except Exception as e:
-                print(f"[!] Error cleaning up extension directory: {e}")
-        
-        # Cleanup download directory if empty
-        try:
-            if os.path.exists(download_dir) and not os.listdir(download_dir):
-                shutil.rmtree(download_dir)
-        except:
-            pass
+                shutil.rmtree(temp_dir)
+                print("[+] Cleaned up temp directory")
+            except:
+                pass
 
 
 if __name__ == "__main__":
