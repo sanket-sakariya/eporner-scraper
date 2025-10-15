@@ -39,6 +39,13 @@ API_CMD = "/api 68e7e8def42a4241739ba1c7"
 # Telegram group to send messages to
 TELEGRAM_GROUP_ID = -1003172525478  # Replace with your group ID
 
+# Proxy Configuration (from optimized_downloader.py)
+PROXY_IP = "191.96.254.130"
+PROXY_PORT = "6177"
+PROXY_USERNAME = "tjijutki"
+PROXY_PASSWORD = "4vg93ifc50gnx"
+USE_PROXY = True  # Set to False to disable proxy
+
 # DiskWala pattern
 DISKWALA_PATTERN = re.compile(
     r'(https?://(?:www\.)?diskwala\.com/app/[A-Za-z0-9_\-]+)', re.IGNORECASE
@@ -63,6 +70,18 @@ class IntegratedDownloaderBot:
         
         # Setup requests session with server-optimized settings
         self.session = requests.Session()
+        
+        # Configure proxy if enabled
+        if USE_PROXY:
+            self.proxies = {
+                'http': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_IP}:{PROXY_PORT}',
+                'https': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_IP}:{PROXY_PORT}'
+            }
+            self.session.proxies.update(self.proxies)
+            logger.info(f"🔗 Proxy configured: {PROXY_IP}:{PROXY_PORT}")
+        else:
+            self.proxies = None
+            logger.info("🚫 Proxy disabled")
         
         # Rotate User-Agents to avoid detection
         user_agents = [
@@ -154,6 +173,10 @@ class IntegratedDownloaderBot:
                     logger.warning(f"Rate limited (429) - waiting longer...")
                     time.sleep(10)
                     continue
+                elif response.status_code == 503:
+                    logger.warning(f"Server overloaded (503) - retrying in 5 seconds...")
+                    time.sleep(5)
+                    continue
                 
                 response.raise_for_status()
                 
@@ -161,13 +184,17 @@ class IntegratedDownloaderBot:
                 total_size = int(response.headers.get('content-length', 0))
                 logger.info(f"File size: {self.human_size(total_size) if total_size > 0 else 'Unknown'}")
                 
-                # Validate content type for MP4 files
+                # Validate content type for MP4 files (from optimized_downloader.py)
                 if filename.endswith('.mp4'):
                     content_type = response.headers.get('content-type', '').lower()
                     if 'video' not in content_type and 'mp4' not in content_type:
                         logger.warning(f"Unexpected content type: {content_type}")
+                        logger.warning(f"Server did not return a video file. Content-Type is '{content_type}'. Skipping.")
                         if attempt < max_attempts - 1:
                             continue
+                        else:
+                            logger.error(f"Failed: Server did not return a video file after {max_attempts} attempts")
+                            return None
                 
                 # Download with progress tracking
                 with open(filepath, 'wb') as f:
@@ -226,9 +253,92 @@ class IntegratedDownloaderBot:
             n /= 1024.0
         return f"{n:.1f}PB"
     
+    def test_proxy_connection(self):
+        """Test proxy connection if enabled"""
+        if not USE_PROXY:
+            logger.info("🚫 Proxy testing skipped (proxy disabled)")
+            return True
+            
+        logger.info(f"🔍 Testing proxy connection: {PROXY_IP}:{PROXY_PORT}")
+        
+        test_urls = [
+            "http://httpbin.org/ip",
+            "https://httpbin.org/ip",
+            "http://ipinfo.io/ip",
+            "https://api.ipify.org",
+        ]
+        
+        for url in test_urls:
+            try:
+                logger.info(f"Testing proxy with: {url}")
+                response = self.session.get(url, timeout=15)
+                
+                if response.status_code == 200:
+                    logger.info(f"✅ Proxy connection successful via {url}")
+                    logger.info(f"   Response: {response.text.strip()}")
+                    return True
+                elif response.status_code == 503:
+                    logger.warning(f"⚠️  Server overloaded (503) - trying next endpoint...")
+                    continue
+                elif response.status_code == 407:
+                    logger.error(f"❌ Proxy authentication failed (407) - check credentials")
+                    return False
+                else:
+                    logger.warning(f"⚠️  Proxy test failed with status: {response.status_code} - trying next endpoint...")
+                    continue
+                    
+            except requests.exceptions.ProxyError as e:
+                logger.warning(f"⚠️  Proxy error with {url}: {e}")
+                continue
+            except requests.exceptions.Timeout:
+                logger.warning(f"⚠️  Timeout with {url} - trying next endpoint...")
+                continue
+            except Exception as e:
+                logger.warning(f"⚠️  Error testing {url}: {e}")
+                continue
+        
+        logger.warning("⚠️  All proxy test endpoints failed, but proceeding anyway...")
+        return True  # Proceed anyway as proxy might work for actual downloads
+
+    def test_proxy_with_download_url(self, download_url):
+        """Test proxy specifically with a download URL"""
+        if not USE_PROXY:
+            return True
+            
+        try:
+            logger.info(f"🔍 Testing proxy with download URL...")
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'video/mp4,video/*,*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://www.eporner.com/',
+            }
+            
+            # Test with HEAD request first (faster)
+            response = self.session.head(download_url, headers=headers, timeout=15)
+            
+            if response.status_code in [200, 206, 302, 301]:
+                logger.info(f"✅ Proxy works with download URL (status: {response.status_code})")
+                return True
+            elif response.status_code == 503:
+                logger.warning(f"⚠️  Download server overloaded (503) - proxy may still work")
+                return True  # Allow to proceed as proxy might work for actual download
+            else:
+                logger.warning(f"⚠️  Download URL test failed with status: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.warning(f"⚠️  Download URL proxy test failed: {e}")
+            return False
+
     def test_network_connectivity(self):
         """Test network connectivity and diagnose server issues"""
         logger.info("🔍 Testing network connectivity...")
+        
+        # Test proxy first if enabled
+        if USE_PROXY:
+            self.test_proxy_connection()
         
         test_urls = [
             "https://www.eporner.com/",
@@ -393,7 +503,7 @@ class IntegratedDownloaderBot:
     async def process_videos(self):
         """Main process to download, upload, and send videos"""
         try:
-            # Test network connectivity first
+            # Test network connectivity and proxy first
             self.test_network_connectivity()
             
             # Get video data from database
@@ -440,8 +550,15 @@ class IntegratedDownloaderBot:
                         logger.warning(f"No MP4 or JPG links found for: {video_data['video_url']}")
                         continue
                     
-                    # Download MP4 file
+                    # Test proxy with download URL first
                     mp4_url = mp4_links[0]  # Get first MP4 link
+                    if USE_PROXY:
+                        logger.info(f"🔍 Testing proxy with MP4 URL: {mp4_url}")
+                        proxy_test_result = self.test_proxy_with_download_url(mp4_url)
+                        if not proxy_test_result:
+                            logger.warning(f"⚠️  Proxy test failed for MP4 URL, but proceeding anyway...")
+                    
+                    # Download MP4 file
                     mp4_filename = f"video_{video_data['id']}.mp4"
                     mp4_path = self.download_file(mp4_url, mp4_filename)
                     
@@ -449,8 +566,14 @@ class IntegratedDownloaderBot:
                         logger.error(f"Failed to download MP4: {mp4_url}")
                         continue
                     
-                    # Download JPG file
+                    # Test proxy with JPG URL and download JPG file
                     jpg_url = jpg_links[0]  # Get first JPG link
+                    if USE_PROXY:
+                        logger.info(f"🔍 Testing proxy with JPG URL: {jpg_url}")
+                        proxy_test_result = self.test_proxy_with_download_url(jpg_url)
+                        if not proxy_test_result:
+                            logger.warning(f"⚠️  Proxy test failed for JPG URL, but proceeding anyway...")
+                    
                     jpg_filename = f"image_{video_data['id']}.jpg"
                     jpg_path = self.download_file(jpg_url, jpg_filename)
                     
