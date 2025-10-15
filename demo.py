@@ -136,6 +136,27 @@ def setup_virtual_display():
         return False
 
 
+def test_chrome_session(driver):
+    """Test if Chrome session is working properly."""
+    try:
+        # Test basic functionality
+        driver.get("about:blank")
+        time.sleep(1)
+        
+        # Test JavaScript execution
+        result = driver.execute_script("return 'Chrome is working';")
+        if result == "Chrome is working":
+            print("[+] Chrome JavaScript test passed")
+            return True
+        else:
+            print("[!] Chrome JavaScript test failed")
+            return False
+            
+    except Exception as e:
+        print(f"[!] Chrome session test failed: {e}")
+        return False
+
+
 def check_chrome_installation():
     """Check if Chrome is properly installed and accessible."""
     import subprocess
@@ -266,10 +287,11 @@ def main():
     # --- Setup Chrome via webdriver-manager ---
     opts = Options()
     
-    # Essential options for server environment
+    # Minimal essential options for server environment
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
+    opts.add_argument("--headless=new")  # Force headless mode for server
     
     # Fix user data directory conflict with better isolation
     import tempfile
@@ -280,33 +302,14 @@ def main():
     temp_dir = tempfile.mkdtemp(prefix=f"chrome_session_{uuid.uuid4().hex[:8]}_")
     opts.add_argument(f"--user-data-dir={temp_dir}")
     
-    # Additional isolation options
-    opts.add_argument("--disable-background-timer-throttling")
-    opts.add_argument("--disable-backgrounding-occluded-windows")
-    opts.add_argument("--disable-renderer-backgrounding")
-    opts.add_argument("--disable-features=TranslateUI")
-    opts.add_argument("--disable-ipc-flooding-protection")
-    
-    # Server-specific options
+    # Minimal server-specific options
     opts.add_argument("--disable-web-security")
-    opts.add_argument("--disable-features=VizDisplayCompositor")
     opts.add_argument("--disable-extensions")
     opts.add_argument("--disable-plugins")
     opts.add_argument("--disable-images")  # Speed up loading
     
-    # Keep important browser functionality
-    opts.add_argument("--enable-javascript")  # Enable JS
-    opts.add_argument("--enable-cookies")
-    opts.add_argument("--enable-local-storage")
-    opts.add_argument("--enable-session-storage")
-    
     # Window and display options for server
     opts.add_argument("--window-size=1920,1080")
-    opts.add_argument("--start-maximized")
-    
-    # Memory and performance optimizations
-    opts.add_argument("--memory-pressure-off")
-    opts.add_argument("--max_old_space_size=4096")
     
     # Disable logging to reduce noise
     opts.add_argument("--log-level=3")
@@ -315,50 +318,53 @@ def main():
     # Set user agent to avoid detection
     opts.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-    # Try to use ChromeDriverManager with fallback
+    # Try to use ChromeDriverManager with simplified approach
     print(f"[+] Creating Chrome session with temp dir: {temp_dir}")
     
+    driver = None
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=opts)
         print(f"[+] Chrome driver started successfully!")
+        
+        # Test the session
+        print("[+] Testing Chrome session...")
+        if not test_chrome_session(driver):
+            print("[!] Chrome session test failed")
+            driver.quit()
+            return False
+        print("[+] Chrome session test successful!")
+        
     except Exception as e:
         print(f"[!] Failed to start Chrome driver: {e}")
-        print("[+] Trying alternative approach...")
+        print("[+] Trying with explicit Chrome binary...")
         
-        # Try with explicit Chrome binary path and additional options
+        # Try with explicit Chrome binary path
         import shutil
         chrome_binary = shutil.which("google-chrome") or shutil.which("chromium-browser")
         if chrome_binary:
             opts.binary_location = chrome_binary
-            
-            # Add more isolation options for the retry
-            opts.add_argument("--single-process")
-            opts.add_argument("--no-zygote")
-            opts.add_argument("--disable-background-networking")
-            
             try:
                 service = Service(ChromeDriverManager().install())
                 driver = webdriver.Chrome(service=service, options=opts)
                 print(f"[+] Chrome driver started with binary: {chrome_binary}")
+                
+                # Test the session
+                print("[+] Testing Chrome session...")
+                if not test_chrome_session(driver):
+                    print("[!] Chrome session test failed")
+                    driver.quit()
+                    return False
+                print("[+] Chrome session test successful!")
+                
             except Exception as e2:
                 print(f"[!] Failed with explicit binary path: {e2}")
-                print("[+] Trying headless mode as last resort...")
-                
-                # Try headless mode as last resort
-                opts.add_argument("--headless=new")
+                # Cleanup temp directory
                 try:
-                    service = Service(ChromeDriverManager().install())
-                    driver = webdriver.Chrome(service=service, options=opts)
-                    print(f"[+] Chrome driver started in headless mode")
-                except Exception as e3:
-                    print(f"[!] All attempts failed. Last error: {e3}")
-                    # Cleanup temp directory
-                    try:
-                        shutil.rmtree(temp_dir)
-                    except:
-                        pass
-                    return False
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass
+                return False
         else:
             print("[!] No Chrome binary found")
             # Cleanup temp directory
@@ -367,13 +373,27 @@ def main():
             except:
                 pass
             return False
+    
+    if driver is None:
+        print("[!] Failed to create Chrome driver")
+        return False
 
     try:
         # Visit referer page
+        print(f"[+] Navigating to referer page: {REFERER_PAGE}")
         driver.get(REFERER_PAGE)
-        time.sleep(2)
+        time.sleep(3)  # Give more time for page load
+        
+        # Check if page loaded successfully
+        try:
+            current_url = driver.current_url
+            print(f"[+] Successfully loaded page: {current_url}")
+        except Exception as e:
+            print(f"[!] Error getting current URL: {e}")
+            return False
 
         # Inject cookies (from curl)
+        print("[+] Injecting cookies...")
         parsed = urlparse(REFERER_PAGE)
         cookie_domain = parsed.hostname
         cookies_from_string = parse_cookie_string(COOKIE_STRING)
@@ -381,17 +401,25 @@ def main():
             cookie_dict = {"name": name, "value": value, "domain": cookie_domain, "path": "/"}
             try:
                 driver.add_cookie(cookie_dict)
+                print(f"[+] Added cookie: {name}")
             except Exception as e:
                 print(f"[warn] Could not add cookie {name}: {e}")
 
         # Reload page so cookies apply
+        print("[+] Reloading page to apply cookies...")
         driver.get(REFERER_PAGE)
-        time.sleep(1)
+        time.sleep(2)
 
         # Extract cookies from live browser
+        print("[+] Extracting cookies from browser...")
         selenium_cookies = selenium_get_cookies(driver, domain=cookie_domain)
         merged_cookies = cookies_from_string.copy()
         merged_cookies.update(selenium_cookies)
+        print(f"[+] Extracted {len(selenium_cookies)} cookies from browser")
+
+    except Exception as e:
+        print(f"[!] Error during page navigation: {e}")
+        return False
 
     finally:
         try:
