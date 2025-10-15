@@ -54,7 +54,8 @@ DISKWALA_PATTERN = re.compile(
 # Download settings
 DOWNLOAD_DIR = "downloads"
 DELAY_BETWEEN_UPLOADS = 2.0
-MAX_FILE_SIZE = None  # None for no limit
+MAX_FILE_SIZE_MB = 100  # Maximum file size in MB (set to None for no limit)
+MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024 if MAX_FILE_SIZE_MB else None  # Convert to bytes
 DOWNLOAD_TIMEOUT = 600  # 10 minutes timeout for large files
 MAX_DOWNLOAD_ATTEMPTS = 5  # More attempts for large files
 
@@ -84,6 +85,12 @@ class IntegratedDownloaderBot:
         else:
             self.proxies = None
             logger.info("🚫 Proxy disabled")
+        
+        # Log file size limit
+        if MAX_FILE_SIZE:
+            logger.info(f"📏 File size limit: {self.human_size(MAX_FILE_SIZE)}")
+        else:
+            logger.info("📏 File size limit: None (no limit)")
         
         # Rotate User-Agents to avoid detection
         user_agents = [
@@ -341,6 +348,47 @@ class IntegratedDownloaderBot:
         logger.warning("⚠️  All proxy test endpoints failed, but proceeding anyway...")
         return True  # Proceed anyway as proxy might work for actual downloads
 
+    def check_file_size(self, download_url):
+        """Check file size before downloading to avoid large files"""
+        try:
+            logger.info(f"🔍 Checking file size for: {download_url}")
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'video/mp4,video/*,*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Referer': 'https://www.eporner.com/',
+            }
+            
+            # Use HEAD request to get file size without downloading
+            response = self.session.head(download_url, headers=headers, timeout=15)
+            
+            if response.status_code in [200, 206, 302, 301]:
+                # Get content length from headers
+                content_length = response.headers.get('content-length')
+                if content_length:
+                    file_size = int(content_length)
+                    file_size_mb = file_size / (1024 * 1024)
+                    
+                    logger.info(f"📏 File size: {self.human_size(file_size)}")
+                    
+                    if MAX_FILE_SIZE and file_size > MAX_FILE_SIZE:
+                        logger.warning(f"⚠️  File too large ({self.human_size(file_size)} > {self.human_size(MAX_FILE_SIZE)}) - skipping")
+                        return False, file_size
+                    else:
+                        logger.info(f"✅ File size OK ({self.human_size(file_size)})")
+                        return True, file_size
+                else:
+                    logger.warning("⚠️  Could not determine file size - proceeding anyway")
+                    return True, 0
+            else:
+                logger.warning(f"⚠️  Could not check file size (status: {response.status_code}) - proceeding anyway")
+                return True, 0
+                
+        except Exception as e:
+            logger.warning(f"⚠️  Error checking file size: {e} - proceeding anyway")
+            return True, 0
+
     def test_proxy_with_download_url(self, download_url):
         """Test proxy specifically with a download URL"""
         if not USE_PROXY:
@@ -591,8 +639,15 @@ class IntegratedDownloaderBot:
                         logger.warning(f"No MP4 or JPG links found for: {video_data['video_url']}")
                         continue
                     
-                    # Test proxy with download URL first
+                    # Check file size first to avoid large downloads
                     mp4_url = mp4_links[0]  # Get first MP4 link
+                    size_ok, file_size = self.check_file_size(mp4_url)
+                    
+                    if not size_ok:
+                        logger.warning(f"⏭️  Skipping video due to large file size: {video_data['video_url']}")
+                        continue
+                    
+                    # Test proxy with download URL
                     if USE_PROXY:
                         logger.info(f"🔍 Testing proxy with MP4 URL: {mp4_url}")
                         proxy_test_result = self.test_proxy_with_download_url(mp4_url)
@@ -634,7 +689,7 @@ class IntegratedDownloaderBot:
                         continue
                     
                     # Wait for DiskWala URL
-                    await asyncio.sleep(10)
+                    await asyncio.sleep(60)
                     
                     # Check if we got a DiskWala URL
                     if self.urls_found:
