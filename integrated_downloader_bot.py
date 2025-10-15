@@ -199,6 +199,12 @@ class IntegratedDownloaderBot:
                 total_size = int(response.headers.get('content-length', 0))
                 logger.info(f"File size: {self.human_size(total_size) if total_size > 0 else 'Unknown'}")
                 
+                # Check file size limit after getting actual response
+                if MAX_FILE_SIZE and total_size > MAX_FILE_SIZE:
+                    logger.warning(f"⚠️  File too large ({self.human_size(total_size)} > {self.human_size(MAX_FILE_SIZE)}) - stopping download")
+                    response.close()  # Close the connection to stop download
+                    return None
+                
                 # Validate content type for MP4 files (from optimized_downloader.py)
                 if filename.endswith('.mp4'):
                     content_type = response.headers.get('content-type', '').lower()
@@ -218,9 +224,28 @@ class IntegratedDownloaderBot:
                 if os.path.exists(filepath):
                     downloaded = os.path.getsize(filepath)
                     logger.info(f"Resuming download from {self.human_size(downloaded)}")
-                    # Add Range header for resume
-                    current_headers['Range'] = f'bytes={downloaded}-'
-                    response = self.session.get(url, headers=current_headers, stream=True, timeout=(30, 300))
+                    
+                    # Check if partial file is already too large
+                    if MAX_FILE_SIZE and downloaded > MAX_FILE_SIZE:
+                        logger.warning(f"⚠️  Partial file already too large ({self.human_size(downloaded)} > {self.human_size(MAX_FILE_SIZE)}) - removing")
+                        os.remove(filepath)
+                        downloaded = 0
+                    else:
+                        # Add Range header for resume
+                        current_headers['Range'] = f'bytes={downloaded}-'
+                        response = self.session.get(url, headers=current_headers, stream=True, timeout=(30, DOWNLOAD_TIMEOUT))
+                        
+                        # Re-check file size for resumed download
+                        resumed_total_size = int(response.headers.get('content-length', 0))
+                        if resumed_total_size > 0:
+                            actual_total_size = downloaded + resumed_total_size
+                            logger.info(f"Resumed file total size will be: {self.human_size(actual_total_size)}")
+                            
+                            if MAX_FILE_SIZE and actual_total_size > MAX_FILE_SIZE:
+                                logger.warning(f"⚠️  Resumed file would be too large ({self.human_size(actual_total_size)} > {self.human_size(MAX_FILE_SIZE)}) - stopping")
+                                response.close()
+                                os.remove(filepath)  # Remove partial file
+                                return None
                 
                 with open(filepath, 'ab' if downloaded > 0 else 'wb') as f:
                     try:
@@ -639,13 +664,8 @@ class IntegratedDownloaderBot:
                         logger.warning(f"No MP4 or JPG links found for: {video_data['video_url']}")
                         continue
                     
-                    # Check file size first to avoid large downloads
+                    # Get MP4 URL (file size will be checked during download)
                     mp4_url = mp4_links[0]  # Get first MP4 link
-                    size_ok, file_size = self.check_file_size(mp4_url)
-                    
-                    if not size_ok:
-                        logger.warning(f"⏭️  Skipping video due to large file size: {video_data['video_url']}")
-                        continue
                     
                     # Test proxy with download URL
                     if USE_PROXY:
@@ -659,7 +679,7 @@ class IntegratedDownloaderBot:
                     mp4_path = self.download_file(mp4_url, mp4_filename)
                     
                     if not mp4_path:
-                        logger.error(f"Failed to download MP4: {mp4_url}")
+                        logger.warning(f"⏭️  Skipped MP4 download (likely too large): {mp4_url}")
                         continue
                     
                     # Test proxy with JPG URL and download JPG file
@@ -674,7 +694,7 @@ class IntegratedDownloaderBot:
                     jpg_path = self.download_file(jpg_url, jpg_filename)
                     
                     if not jpg_path:
-                        logger.error(f"Failed to download JPG: {jpg_url}")
+                        logger.warning(f"⏭️  Skipped JPG download (likely too large): {jpg_url}")
                         # Clean up MP4 file if JPG download failed
                         self.cleanup_files(mp4_path, None)
                         continue
