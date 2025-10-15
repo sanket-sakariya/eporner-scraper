@@ -55,6 +55,8 @@ DISKWALA_PATTERN = re.compile(
 DOWNLOAD_DIR = "downloads"
 DELAY_BETWEEN_UPLOADS = 2.0
 MAX_FILE_SIZE = None  # None for no limit
+DOWNLOAD_TIMEOUT = 600  # 10 minutes timeout for large files
+MAX_DOWNLOAD_ATTEMPTS = 5  # More attempts for large files
 
 # -------------------- CLASSES --------------------
 
@@ -107,13 +109,16 @@ class IntegratedDownloaderBot:
         }
         self.session.headers.update(headers)
         
-        # Enhanced retry strategy for server environments
+        # Enhanced retry strategy for server environments with large file support
         retry_strategy = Retry(
-            total=5,  # Increased retries for server
-            backoff_factor=3,  # Longer backoff
+            total=3,  # Reduced retries to avoid long waits
+            backoff_factor=2,  # Shorter backoff
             status_forcelist=[429, 500, 502, 503, 504, 403, 408],
             allowed_methods=["HEAD", "GET", "OPTIONS"],
-            raise_on_status=False
+            raise_on_status=False,
+            read=0,  # Don't retry on read errors (let our custom logic handle it)
+            connect=3,  # Retry connection errors
+            redirect=3  # Retry redirects
         )
         
         # Configure adapter with connection pooling
@@ -130,8 +135,11 @@ class IntegratedDownloaderBot:
         self.user_agents = user_agents
         self.current_ua_index = 0
     
-    def download_file(self, url, filename, max_attempts=3):
+    def download_file(self, url, filename, max_attempts=None):
         """Download a file from URL with server-optimized retry logic"""
+        if max_attempts is None:
+            max_attempts = MAX_DOWNLOAD_ATTEMPTS
+            
         filepath = os.path.join(self.download_dir, filename)
         
         # Check if file already exists
@@ -155,11 +163,11 @@ class IntegratedDownloaderBot:
                     logger.info(f"Waiting {delay} seconds before retry...")
                     time.sleep(delay)
                 
-                # Make request with rotated headers
+                # Make request with rotated headers and optimized timeouts for large files
                 response = self.session.get(
                     url, 
                     stream=True, 
-                    timeout=(30, 300),  # (connect timeout, read timeout)
+                    timeout=(30, DOWNLOAD_TIMEOUT),  # Use configured timeout for large files
                     headers=current_headers,
                     allow_redirects=True,
                     verify=False  # Disable SSL verification for server compatibility
@@ -196,20 +204,41 @@ class IntegratedDownloaderBot:
                             logger.error(f"Failed: Server did not return a video file after {max_attempts} attempts")
                             return None
                 
-                # Download with progress tracking
-                with open(filepath, 'wb') as f:
-                    downloaded = 0
-                    chunk_size = 16384  # Increased chunk size for server
-                    
-                    for chunk in response.iter_content(chunk_size=chunk_size):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            
-                            # Show progress
-                            if total_size > 0:
-                                progress = (downloaded / total_size) * 100
-                                print(f"\rProgress: {progress:.1f}% ({self.human_size(downloaded)}/{self.human_size(total_size)})", end="", flush=True)
+                # Check if file already exists and resume download
+                downloaded = 0
+                chunk_size = 8192  # Smaller chunk size for better stability
+                
+                if os.path.exists(filepath):
+                    downloaded = os.path.getsize(filepath)
+                    logger.info(f"Resuming download from {self.human_size(downloaded)}")
+                    # Add Range header for resume
+                    current_headers['Range'] = f'bytes={downloaded}-'
+                    response = self.session.get(url, headers=current_headers, stream=True, timeout=(30, 300))
+                
+                with open(filepath, 'ab' if downloaded > 0 else 'wb') as f:
+                    try:
+                        for chunk in response.iter_content(chunk_size=chunk_size):
+                            if chunk:
+                                f.write(chunk)
+                                downloaded += len(chunk)
+                                
+                                # Show progress
+                                if total_size > 0:
+                                    progress = (downloaded / total_size) * 100
+                                    print(f"\rProgress: {progress:.1f}% ({self.human_size(downloaded)}/{self.human_size(total_size)})", end="", flush=True)
+                                
+                                # Flush periodically to ensure data is written
+                                if downloaded % (chunk_size * 100) == 0:  # Every 100 chunks
+                                    f.flush()
+                                    
+                    except Exception as download_error:
+                        logger.warning(f"Download interrupted: {download_error}")
+                        # If download was interrupted, try to resume
+                        if downloaded > 0 and downloaded < total_size:
+                            logger.info(f"Attempting to resume download from {self.human_size(downloaded)}")
+                            raise download_error  # Let the retry logic handle it
+                        else:
+                            raise download_error
                 
                 print(f"\n✓ Downloaded: {filename} ({self.human_size(downloaded)})")
                 
@@ -238,8 +267,20 @@ class IntegratedDownloaderBot:
                     continue
                     
             except Exception as e:
-                logger.error(f"Unexpected error (attempt {attempt + 1}): {e}")
+                error_msg = str(e)
+                if "IncompleteRead" in error_msg:
+                    logger.warning(f"Connection broken during download (attempt {attempt + 1}): {e}")
+                    logger.info("This usually happens with large files through proxy. Will retry with resume capability.")
+                else:
+                    logger.error(f"Unexpected error (attempt {attempt + 1}): {e}")
+                
                 if attempt < max_attempts - 1:
+                    # Clean up partial file if it's too small
+                    if os.path.exists(filepath):
+                        file_size = os.path.getsize(filepath)
+                        if file_size < 1024 * 1024:  # Less than 1MB
+                            os.remove(filepath)
+                            logger.info("Removed incomplete small file")
                     continue
         
         logger.error(f"Failed to download {url} after {max_attempts} attempts")
