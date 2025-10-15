@@ -1,19 +1,23 @@
 """
-Download an .mp4 file from eporner using undetected-chromedriver with residential proxy.
-- Uses undetected-chromedriver for better stealth and performance
+Download an .mp4 file from eporner using requests with residential proxy.
+- Uses requests for direct HTTP downloads (fastest method)
 - Supports residential proxy with authentication
-- Faster and more reliable downloads
+- Fallback to selenium with proxy if needed
+- Compatible with Python 3.13+
 """
 
-# pip install undetected-chromedriver requests
+# pip install requests selenium webdriver-manager
 
-import undetected_chromedriver as uc
 import requests
 import time
 import os
 import shutil
 from pathlib import Path
 import tempfile
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
 
 
 # ---------------- CONFIG ----------------
@@ -130,44 +134,50 @@ def main():
             print("[!] Download completed but file not found")
             return False
     else:
-        print("[!] Direct download failed, trying with undetected-chromedriver...")
+        print("[!] Direct download failed, trying with Chrome/selenium...")
         return download_with_chrome(DOWNLOAD_URL, output_path, proxy_config)
 
 
 def download_with_chrome(download_url, output_filename, proxy_config):
-    """Fallback method using undetected-chromedriver."""
+    """Fallback method using selenium with proxy."""
     driver = None
     temp_dir = None
     
     try:
-        print(f"[+] Setting up undetected-chromedriver...")
+        print(f"[+] Setting up Chrome with selenium...")
         
         # Create temp directory for Chrome user data
         temp_dir = tempfile.mkdtemp(prefix="chrome_session_")
         
         # Setup Chrome options
-        options = uc.ChromeOptions()
+        options = Options()
         options.add_argument(f"--user-data-dir={temp_dir}")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--headless=new")
+        options.add_argument("--disable-web-security")
+        options.add_argument("--disable-features=VizDisplayCompositor")
         
-        # Setup proxy
+        # Setup proxy with authentication
         proxy_server = f"{proxy_config['ip']}:{proxy_config['port']}"
         options.add_argument(f"--proxy-server=http://{proxy_server}")
         
         # Setup download preferences
+        download_dir = os.path.dirname(output_filename)
         prefs = {
-            "download.default_directory": os.path.dirname(output_filename),
+            "download.default_directory": download_dir,
             "download.prompt_for_download": False,
             "download.directory_upgrade": True,
             "safebrowsing.enabled": False,
+            "profile.default_content_settings.popups": 0,
+            "profile.default_content_setting_values.automatic_downloads": 1,
         }
         options.add_experimental_option("prefs", prefs)
         
         # Initialize driver
-        driver = uc.Chrome(options=options)
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=options)
         print(f"[+] Chrome driver started with proxy: {proxy_server}")
         
         # Navigate to download URL
@@ -175,10 +185,10 @@ def download_with_chrome(download_url, output_filename, proxy_config):
         driver.get(download_url)
         
         # Wait for download to start and complete
-        time.sleep(5)  # Give it time to start
+        print(f"[+] Waiting for download to complete...")
+        time.sleep(10)  # Give it time to start
         
         # Check if download completed
-        download_dir = os.path.dirname(output_filename)
         downloaded_files = [f for f in Path(download_dir).iterdir() if f.is_file() and f.suffix == '.mp4']
         
         if downloaded_files:
@@ -192,6 +202,8 @@ def download_with_chrome(download_url, output_filename, proxy_config):
             
     except Exception as e:
         print(f"[!] Error during Chrome download: {e}")
+        import traceback
+        traceback.print_exc()
         return False
         
     finally:
