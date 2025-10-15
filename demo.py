@@ -68,6 +68,74 @@ def selenium_get_cookies(driver, domain=None):
     return cookies
 
 
+def kill_existing_chrome_processes():
+    """Kill any existing Chrome processes to prevent conflicts."""
+    import subprocess
+    import signal
+    import os
+    
+    try:
+        # Find Chrome processes
+        result = subprocess.run(['pgrep', '-f', 'chrome'], capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            print(f"[+] Found {len(pids)} existing Chrome processes, killing them...")
+            for pid in pids:
+                try:
+                    os.kill(int(pid), signal.SIGTERM)
+                    print(f"[+] Killed Chrome process {pid}")
+                except (ProcessLookupError, ValueError):
+                    pass
+            
+            # Wait a moment for processes to terminate
+            time.sleep(2)
+            
+            # Force kill if still running
+            result = subprocess.run(['pgrep', '-f', 'chrome'], capture_output=True, text=True)
+            if result.returncode == 0 and result.stdout.strip():
+                pids = result.stdout.strip().split('\n')
+                for pid in pids:
+                    try:
+                        os.kill(int(pid), signal.SIGKILL)
+                        print(f"[+] Force killed Chrome process {pid}")
+                    except (ProcessLookupError, ValueError):
+                        pass
+        else:
+            print("[+] No existing Chrome processes found")
+    except Exception as e:
+        print(f"[!] Error killing Chrome processes: {e}")
+
+
+def setup_virtual_display():
+    """Setup virtual display for headless Chrome if needed."""
+    import subprocess
+    import os
+    
+    try:
+        # Check if DISPLAY is set
+        if not os.environ.get('DISPLAY'):
+            print("[+] No DISPLAY found, setting up virtual display...")
+            
+            # Try to start Xvfb
+            result = subprocess.run(['which', 'Xvfb'], capture_output=True, text=True)
+            if result.returncode == 0:
+                # Start Xvfb on display :99
+                subprocess.Popen(['Xvfb', ':99', '-screen', '0', '1920x1080x24'], 
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                os.environ['DISPLAY'] = ':99'
+                print("[+] Virtual display started on :99")
+                return True
+            else:
+                print("[!] Xvfb not found, Chrome will run in headless mode")
+                return False
+        else:
+            print(f"[+] Using existing DISPLAY: {os.environ.get('DISPLAY')}")
+            return True
+    except Exception as e:
+        print(f"[!] Error setting up virtual display: {e}")
+        return False
+
+
 def check_chrome_installation():
     """Check if Chrome is properly installed and accessible."""
     import subprocess
@@ -187,6 +255,14 @@ def main():
     if not check_chrome_installation():
         return False
     
+    # Kill any existing Chrome processes
+    print("[+] Cleaning up existing Chrome processes...")
+    kill_existing_chrome_processes()
+    
+    # Setup virtual display if needed
+    print("[+] Setting up display environment...")
+    setup_virtual_display()
+    
     # --- Setup Chrome via webdriver-manager ---
     opts = Options()
     
@@ -195,11 +271,21 @@ def main():
     opts.add_argument("--disable-dev-shm-usage")
     opts.add_argument("--disable-gpu")
     
-    # Fix user data directory conflict
+    # Fix user data directory conflict with better isolation
     import tempfile
     import os
-    temp_dir = tempfile.mkdtemp()
+    import uuid
+    
+    # Create a more unique temp directory
+    temp_dir = tempfile.mkdtemp(prefix=f"chrome_session_{uuid.uuid4().hex[:8]}_")
     opts.add_argument(f"--user-data-dir={temp_dir}")
+    
+    # Additional isolation options
+    opts.add_argument("--disable-background-timer-throttling")
+    opts.add_argument("--disable-backgrounding-occluded-windows")
+    opts.add_argument("--disable-renderer-backgrounding")
+    opts.add_argument("--disable-features=TranslateUI")
+    opts.add_argument("--disable-ipc-flooding-protection")
     
     # Server-specific options
     opts.add_argument("--disable-web-security")
@@ -207,10 +293,9 @@ def main():
     opts.add_argument("--disable-extensions")
     opts.add_argument("--disable-plugins")
     opts.add_argument("--disable-images")  # Speed up loading
-    opts.add_argument("--disable-javascript")  # We'll enable this selectively
     
     # Keep important browser functionality
-    opts.add_argument("--enable-javascript")  # Re-enable JS
+    opts.add_argument("--enable-javascript")  # Enable JS
     opts.add_argument("--enable-cookies")
     opts.add_argument("--enable-local-storage")
     opts.add_argument("--enable-session-storage")
@@ -231,31 +316,49 @@ def main():
     opts.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     # Try to use ChromeDriverManager with fallback
+    print(f"[+] Creating Chrome session with temp dir: {temp_dir}")
+    
     try:
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=opts)
-        print(f"[+] Chrome driver started successfully with temp dir: {temp_dir}")
+        print(f"[+] Chrome driver started successfully!")
     except Exception as e:
         print(f"[!] Failed to start Chrome driver: {e}")
         print("[+] Trying alternative approach...")
         
-        # Try with explicit Chrome binary path
+        # Try with explicit Chrome binary path and additional options
         import shutil
         chrome_binary = shutil.which("google-chrome") or shutil.which("chromium-browser")
         if chrome_binary:
             opts.binary_location = chrome_binary
+            
+            # Add more isolation options for the retry
+            opts.add_argument("--single-process")
+            opts.add_argument("--no-zygote")
+            opts.add_argument("--disable-background-networking")
+            
             try:
                 service = Service(ChromeDriverManager().install())
                 driver = webdriver.Chrome(service=service, options=opts)
                 print(f"[+] Chrome driver started with binary: {chrome_binary}")
             except Exception as e2:
                 print(f"[!] Failed with explicit binary path: {e2}")
-                # Cleanup temp directory
+                print("[+] Trying headless mode as last resort...")
+                
+                # Try headless mode as last resort
+                opts.add_argument("--headless=new")
                 try:
-                    shutil.rmtree(temp_dir)
-                except:
-                    pass
-                return False
+                    service = Service(ChromeDriverManager().install())
+                    driver = webdriver.Chrome(service=service, options=opts)
+                    print(f"[+] Chrome driver started in headless mode")
+                except Exception as e3:
+                    print(f"[!] All attempts failed. Last error: {e3}")
+                    # Cleanup temp directory
+                    try:
+                        shutil.rmtree(temp_dir)
+                    except:
+                        pass
+                    return False
         else:
             print("[!] No Chrome binary found")
             # Cleanup temp directory
