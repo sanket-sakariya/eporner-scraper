@@ -68,6 +68,49 @@ def selenium_get_cookies(driver, domain=None):
     return cookies
 
 
+def check_chrome_installation():
+    """Check if Chrome is properly installed and accessible."""
+    import subprocess
+    import shutil
+    
+    # Check if chrome binary exists
+    chrome_paths = [
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser", 
+        "/usr/bin/chromium",
+        "/opt/google/chrome/chrome",
+        "/usr/local/bin/chrome"
+    ]
+    
+    chrome_found = False
+    for path in chrome_paths:
+        if shutil.which(path):
+            chrome_found = True
+            print(f"[+] Found Chrome at: {path}")
+            break
+    
+    if not chrome_found:
+        print("[!] Chrome not found in common locations")
+        print("[!] Please install Chrome or Chromium:")
+        print("    sudo apt update && sudo apt install -y google-chrome-stable")
+        print("    OR")
+        print("    sudo apt update && sudo apt install -y chromium-browser")
+        return False
+    
+    # Check Chrome version
+    try:
+        result = subprocess.run([shutil.which("google-chrome") or shutil.which("chromium-browser"), "--version"], 
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            print(f"[+] Chrome version: {result.stdout.strip()}")
+        else:
+            print("[!] Could not get Chrome version")
+    except Exception as e:
+        print(f"[!] Error checking Chrome version: {e}")
+    
+    return True
+
+
 def create_robust_session(cookies_dict):
     """Create a requests session with retry logic and proper SSL handling."""
     session = requests.Session()
@@ -139,15 +182,88 @@ def download_with_retry(session, url, output_file, max_retries=3):
 
 
 def main():
+    # Check Chrome installation first
+    print("[+] Checking Chrome installation...")
+    if not check_chrome_installation():
+        return False
+    
     # --- Setup Chrome via webdriver-manager ---
     opts = Options()
-    # opts.add_argument("--headless=new")  # optional, comment out if you need GUI
+    
+    # Essential options for server environment
     opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-gpu")
     opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--disable-gpu")
+    
+    # Fix user data directory conflict
+    import tempfile
+    import os
+    temp_dir = tempfile.mkdtemp()
+    opts.add_argument(f"--user-data-dir={temp_dir}")
+    
+    # Server-specific options
+    opts.add_argument("--disable-web-security")
+    opts.add_argument("--disable-features=VizDisplayCompositor")
+    opts.add_argument("--disable-extensions")
+    opts.add_argument("--disable-plugins")
+    opts.add_argument("--disable-images")  # Speed up loading
+    opts.add_argument("--disable-javascript")  # We'll enable this selectively
+    
+    # Keep important browser functionality
+    opts.add_argument("--enable-javascript")  # Re-enable JS
+    opts.add_argument("--enable-cookies")
+    opts.add_argument("--enable-local-storage")
+    opts.add_argument("--enable-session-storage")
+    
+    # Window and display options for server
+    opts.add_argument("--window-size=1920,1080")
+    opts.add_argument("--start-maximized")
+    
+    # Memory and performance optimizations
+    opts.add_argument("--memory-pressure-off")
+    opts.add_argument("--max_old_space_size=4096")
+    
+    # Disable logging to reduce noise
+    opts.add_argument("--log-level=3")
+    opts.add_argument("--silent")
+    
+    # Set user agent to avoid detection
+    opts.add_argument("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=opts)
+    # Try to use ChromeDriverManager with fallback
+    try:
+        service = Service(ChromeDriverManager().install())
+        driver = webdriver.Chrome(service=service, options=opts)
+        print(f"[+] Chrome driver started successfully with temp dir: {temp_dir}")
+    except Exception as e:
+        print(f"[!] Failed to start Chrome driver: {e}")
+        print("[+] Trying alternative approach...")
+        
+        # Try with explicit Chrome binary path
+        import shutil
+        chrome_binary = shutil.which("google-chrome") or shutil.which("chromium-browser")
+        if chrome_binary:
+            opts.binary_location = chrome_binary
+            try:
+                service = Service(ChromeDriverManager().install())
+                driver = webdriver.Chrome(service=service, options=opts)
+                print(f"[+] Chrome driver started with binary: {chrome_binary}")
+            except Exception as e2:
+                print(f"[!] Failed with explicit binary path: {e2}")
+                # Cleanup temp directory
+                try:
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass
+                return False
+        else:
+            print("[!] No Chrome binary found")
+            # Cleanup temp directory
+            try:
+                shutil.rmtree(temp_dir)
+            except:
+                pass
+            return False
 
     try:
         # Visit referer page
@@ -175,7 +291,19 @@ def main():
         merged_cookies.update(selenium_cookies)
 
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+            print("[+] Chrome driver closed successfully")
+        except Exception as e:
+            print(f"[!] Error closing Chrome driver: {e}")
+        
+        # Cleanup temp directory
+        import shutil
+        try:
+            shutil.rmtree(temp_dir)
+            print(f"[+] Cleaned up temp directory: {temp_dir}")
+        except Exception as e:
+            print(f"[!] Error cleaning up temp directory: {e}")
 
     # --- Download file via requests with retry logic ---
     print(f"[+] Creating robust session with {len(merged_cookies)} cookies...")
