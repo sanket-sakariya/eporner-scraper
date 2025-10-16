@@ -40,10 +40,10 @@ API_CMD = "/api 68e7e8def42a4241739ba1c7"
 TELEGRAM_GROUP_ID = -1003172525478  # Replace with your group ID
 
 # Proxy Configuration (from optimized_downloader.py)
-PROXY_IP = "191.96.254.130"
-PROXY_PORT = "6177"
-PROXY_USERNAME = "tjijutki"
-PROXY_PASSWORD = "4vg93ifc50gnx"
+PROXY_IP = "192.241.125.223"
+PROXY_PORT = "8267"
+PROXY_USERNAME = "tambmpew"
+PROXY_PASSWORD = "sshljzu7jder"
 USE_PROXY = True  # Set to False to disable proxy
 
 # DiskWala pattern
