@@ -589,7 +589,7 @@ class IntegratedDownloaderBot:
         """Main process to download, upload, and send videos"""
         try:
             # Get video data from database
-            video_data_list = self.db.get_video_data_for_download(limit=50)  # Process up to 1000 videos
+            video_data_list = self.db.get_video_data_for_download(limit=1000)  # Process up to 1000 videos
             
             if not video_data_list:
                 logger.info("No videos to process")
