@@ -78,6 +78,25 @@ class DatabaseManager:
                 )
             """)
             
+            # Proxies table - stores Webshare.io proxy information
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS proxies (
+                    id SERIAL PRIMARY KEY,
+                    proxy_id VARCHAR(50) UNIQUE NOT NULL,
+                    ip VARCHAR(45) NOT NULL,
+                    port INTEGER NOT NULL,
+                    username VARCHAR(255) NOT NULL,
+                    password VARCHAR(255) NOT NULL,
+                    country VARCHAR(10),
+                    city VARCHAR(255),
+                    is_active BOOLEAN DEFAULT TRUE,
+                    last_used TIMESTAMP,
+                    failure_count INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
             # Create indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_urls_url ON urls(url)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_urls_processed ON urls(is_processed)")
@@ -85,6 +104,10 @@ class DatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_diskwala_url ON diskwala_data(diskwala_url)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_processed_videos_url ON processed_videos(video_url)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_processed_videos_status ON processed_videos(status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_proxies_proxy_id ON proxies(proxy_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_proxies_ip_port ON proxies(ip, port)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_proxies_active ON proxies(is_active)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_proxies_country ON proxies(country)")
             
             conn.commit()
             cursor.close()
@@ -470,3 +493,245 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error getting processed videos stats: {e}")
             return {}
+    
+    def save_proxy(self, proxy_id, ip, port, username, password, country=None, city=None, is_active=True):
+        """Save a single proxy to database"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            insert_query = """
+            INSERT INTO proxies (proxy_id, ip, port, username, password, country, city, is_active)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (proxy_id) 
+            DO UPDATE SET 
+                ip = EXCLUDED.ip,
+                port = EXCLUDED.port,
+                username = EXCLUDED.username,
+                password = EXCLUDED.password,
+                country = EXCLUDED.country,
+                city = EXCLUDED.city,
+                is_active = EXCLUDED.is_active,
+                updated_at = CURRENT_TIMESTAMP
+            """
+            
+            cursor.execute(insert_query, (proxy_id, ip, port, username, password, country, city, is_active))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving proxy: {e}")
+            return False
+    
+    def get_all_proxies(self, active_only=True):
+        """Get all proxies from database"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            if active_only:
+                query = "SELECT * FROM proxies WHERE is_active = TRUE ORDER BY failure_count ASC, created_at ASC"
+            else:
+                query = "SELECT * FROM proxies ORDER BY failure_count ASC, created_at ASC"
+            
+            cursor.execute(query)
+            results = cursor.fetchall()
+            
+            cursor.close()
+            conn.close()
+            
+            proxies = []
+            for row in results:
+                proxies.append({
+                    'id': row[0],
+                    'proxy_id': row[1],
+                    'ip': row[2],
+                    'port': row[3],
+                    'username': row[4],
+                    'password': row[5],
+                    'country': row[6],
+                    'city': row[7],
+                    'is_active': row[8],
+                    'last_used': row[9],
+                    'failure_count': row[10],
+                    'created_at': row[11],
+                    'updated_at': row[12]
+                })
+            
+            return proxies
+            
+        except Exception as e:
+            logger.error(f"Error getting proxies: {e}")
+            return []
+    
+    def get_random_proxy(self):
+        """Get a random active proxy"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            query = """
+            SELECT * FROM proxies 
+            WHERE is_active = TRUE 
+            ORDER BY RANDOM() 
+            LIMIT 1
+            """
+            
+            cursor.execute(query)
+            result = cursor.fetchone()
+            
+            cursor.close()
+            conn.close()
+            
+            if result:
+                return {
+                    'id': result[0],
+                    'proxy_id': result[1],
+                    'ip': result[2],
+                    'port': result[3],
+                    'username': result[4],
+                    'password': result[5],
+                    'country': result[6],
+                    'city': result[7],
+                    'is_active': result[8],
+                    'last_used': result[9],
+                    'failure_count': result[10],
+                    'created_at': result[11],
+                    'updated_at': result[12]
+                }
+            else:
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting random proxy: {e}")
+            return None
+    
+    def mark_proxy_failure(self, proxy_id):
+        """Mark proxy as failed and increment failure count"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            update_query = """
+            UPDATE proxies 
+            SET failure_count = failure_count + 1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE proxy_id = %s
+            """
+            
+            cursor.execute(update_query, (proxy_id,))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error marking proxy failure: {e}")
+            return False
+    
+    def mark_proxy_success(self, proxy_id):
+        """Mark proxy as successful and reset failure count"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            update_query = """
+            UPDATE proxies 
+            SET failure_count = 0,
+                last_used = CURRENT_TIMESTAMP,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE proxy_id = %s
+            """
+            
+            cursor.execute(update_query, (proxy_id,))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error marking proxy success: {e}")
+            return False
+    
+    def deactivate_proxy(self, proxy_id):
+        """Deactivate a proxy"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            update_query = """
+            UPDATE proxies 
+            SET is_active = FALSE,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE proxy_id = %s
+            """
+            
+            cursor.execute(update_query, (proxy_id,))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deactivating proxy: {e}")
+            return False
+    
+    def get_proxy_stats(self):
+        """Get proxy statistics"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total,
+                    COUNT(CASE WHEN is_active = TRUE THEN 1 END) as active,
+                    COUNT(CASE WHEN is_active = FALSE THEN 1 END) as inactive,
+                    COUNT(CASE WHEN failure_count > 0 THEN 1 END) as failed,
+                    AVG(failure_count) as avg_failures
+                FROM proxies
+            """)
+            
+            result = cursor.fetchone()
+            
+            cursor.close()
+            conn.close()
+            
+            if result:
+                return {
+                    'total': result[0],
+                    'active': result[1],
+                    'inactive': result[2],
+                    'failed': result[3],
+                    'avg_failures': float(result[4]) if result[4] else 0
+                }
+            else:
+                return {}
+                
+        except Exception as e:
+            logger.error(f"Error getting proxy stats: {e}")
+            return {}
+    
+    def clear_all_proxies(self):
+        """Clear all proxies from database"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("DELETE FROM proxies")
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info("All proxies cleared from database")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error clearing proxies: {e}")
+            return False

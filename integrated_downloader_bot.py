@@ -10,6 +10,8 @@ import re
 import time
 import sys
 import requests
+import subprocess
+import shutil
 from urllib.parse import urlparse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -703,9 +705,12 @@ class IntegratedDownloaderBot:
                         # Replace both path and filename
                         mp4_url = mp4_url.replace(f"/{QUALITY_FROM}/", f"/{QUALITY_TO}/")
                         mp4_url = mp4_url.replace(f"-{QUALITY_FROM}p.mp4", f"-{QUALITY_TO}p.mp4")
+                        av1_url = mp4_url.replace(f"-{QUALITY_FROM}p.mp4", f"-{QUALITY_TO}p-av1.mp4")
                         logger.info(f"🔄 Modified URL quality: {QUALITY_FROM}p → {QUALITY_TO}p")
                         logger.info(f"📥 Original URL: {original_url}")
                         logger.info(f"📥 Modified URL: {mp4_url}")
+                        logger.info(f"📥 AV1 URL: {av1_url}")
+                        mp4_url = av1_url
                     else:
                         logger.info(f"📥 Using original MP4 URL: {mp4_url}")
                     
