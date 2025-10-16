@@ -65,11 +65,26 @@ class DatabaseManager:
                 )
             """)
             
+            # Processed videos table - tracks all video URLs that have been processed
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS processed_videos (
+                    id SERIAL PRIMARY KEY,
+                    video_url TEXT UNIQUE NOT NULL,
+                    status VARCHAR(50) NOT NULL,
+                    reason TEXT,
+                    file_size_mb DECIMAL(10,2),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
             # Create indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_urls_url ON urls(url)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_urls_processed ON urls(is_processed)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_video_data_url ON video_data(video_url)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_diskwala_url ON diskwala_data(diskwala_url)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_processed_videos_url ON processed_videos(video_url)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_processed_videos_status ON processed_videos(status)")
             
             conn.commit()
             cursor.close()
@@ -284,7 +299,7 @@ class DatabaseManager:
             return False
     
     def get_video_data_for_download(self, limit=10):
-        """Get video data that hasn't been uploaded to DiskWala yet"""
+        """Get video data that hasn't been uploaded to DiskWala yet and hasn't been processed"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
@@ -293,7 +308,9 @@ class DatabaseManager:
             SELECT vd.id, vd.video_url, vd.view_count, vd.like_count, vd.mp4_links, vd.jpg_links
             FROM video_data vd
             LEFT JOIN diskwala_data dd ON vd.video_url = dd.video_url
+            LEFT JOIN processed_videos pv ON vd.video_url = pv.video_url
             WHERE dd.video_url IS NULL
+            AND pv.video_url IS NULL
             AND vd.mp4_links IS NOT NULL 
             AND jsonb_array_length(vd.mp4_links) > 0
             AND vd.jpg_links IS NOT NULL 
@@ -372,3 +389,84 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Error saving DiskWala data: {e}")
             return False
+    
+    def is_video_processed(self, video_url):
+        """Check if video URL has already been processed"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT id, status, reason FROM processed_videos WHERE video_url = %s", (video_url,))
+            result = cursor.fetchone()
+            
+            cursor.close()
+            conn.close()
+            
+            return result is not None, result[1] if result else None, result[2] if result else None
+            
+        except Exception as e:
+            logger.error(f"Error checking if video processed: {e}")
+            return False, None, None
+    
+    def mark_video_processed(self, video_url, status, reason=None, file_size_mb=None):
+        """Mark video as processed with status and reason"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            insert_query = """
+            INSERT INTO processed_videos (video_url, status, reason, file_size_mb)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (video_url) 
+            DO UPDATE SET 
+                status = EXCLUDED.status,
+                reason = EXCLUDED.reason,
+                file_size_mb = EXCLUDED.file_size_mb,
+                updated_at = CURRENT_TIMESTAMP
+            """
+            
+            cursor.execute(insert_query, (video_url, status, reason, file_size_mb))
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Video marked as processed: {video_url} - Status: {status}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error marking video as processed: {e}")
+            return False
+    
+    def get_processed_videos_stats(self):
+        """Get statistics of processed videos"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    status,
+                    COUNT(*) as count,
+                    AVG(file_size_mb) as avg_file_size_mb
+                FROM processed_videos 
+                GROUP BY status
+                ORDER BY count DESC
+            """)
+            
+            results = cursor.fetchall()
+            
+            cursor.close()
+            conn.close()
+            
+            stats = {}
+            for row in results:
+                stats[row[0]] = {
+                    'count': row[1],
+                    'avg_file_size_mb': float(row[2]) if row[2] else 0
+                }
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Error getting processed videos stats: {e}")
+            return {}

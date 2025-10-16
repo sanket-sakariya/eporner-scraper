@@ -212,8 +212,10 @@ class IntegratedDownloaderBot:
                 
                 # Check file size limit after getting actual response
                 if MAX_FILE_SIZE and total_size > MAX_FILE_SIZE:
+                    file_size_mb = total_size / (1024 * 1024)
                     logger.warning(f"⚠️  File too large ({self.human_size(total_size)} > {self.human_size(MAX_FILE_SIZE)}) - stopping download")
                     response.close()  # Close the connection to stop download
+                    # Note: The calling code will handle marking as processed
                     return None
                 
                 # Validate content type for MP4 files (from optimized_downloader.py)
@@ -671,6 +673,14 @@ class IntegratedDownloaderBot:
                     current_video_url = video_data['video_url']
                     current_diskwala_url = None  # Reset for each video
                     
+                    # Check if video is already processed (any status)
+                    is_processed, status, reason = self.db.is_video_processed(video_data['video_url'])
+                    if is_processed:
+                        logger.info(f"⏭️  Video already processed ({status}): {video_data['video_url']}")
+                        if reason:
+                            logger.info(f"   Reason: {reason}")
+                        continue
+                    
                     # Check if video is already uploaded to DiskWala
                     if self.db.is_video_already_uploaded(video_data['video_url']):
                         logger.info(f"⏭️  Video already uploaded to DiskWala, skipping: {video_data['video_url']}")
@@ -706,12 +716,33 @@ class IntegratedDownloaderBot:
                         if not proxy_test_result:
                             logger.warning(f"⚠️  Proxy test failed for MP4 URL, but proceeding anyway...")
                     
+                    # Check file size before downloading
+                    file_size_ok, file_size = self.check_file_size(mp4_url)
+                    if not file_size_ok:
+                        file_size_mb = file_size / (1024 * 1024) if file_size > 0 else None
+                        logger.warning(f"⏭️  Skipped MP4 download (file too large): {mp4_url}")
+                        # Mark as processed with reason
+                        self.db.mark_video_processed(
+                            video_data['video_url'], 
+                            'skipped', 
+                            'File too large',
+                            file_size_mb
+                        )
+                        continue
+                    
                     # Download MP4 file
                     mp4_filename = f"video_{video_data['id']}.mp4"
                     mp4_path = self.download_file(mp4_url, mp4_filename)
                     
                     if not mp4_path:
-                        logger.warning(f"⏭️  Skipped MP4 download (likely too large): {mp4_url}")
+                        logger.warning(f"⏭️  Skipped MP4 download (download failed): {mp4_url}")
+                        # Mark as processed with reason
+                        self.db.mark_video_processed(
+                            video_data['video_url'], 
+                            'skipped', 
+                            'Download failed',
+                            None
+                        )
                         continue
                     
                     # Test proxy with JPG URL and download JPG file
@@ -729,6 +760,13 @@ class IntegratedDownloaderBot:
                         logger.warning(f"⏭️  Skipped JPG download (likely too large): {jpg_url}")
                         # Clean up MP4 file if JPG download failed
                         self.cleanup_files(mp4_path, None)
+                        # Mark as processed with reason
+                        self.db.mark_video_processed(
+                            video_data['video_url'], 
+                            'skipped', 
+                            'JPG download failed',
+                            None
+                        )
                         continue
                     
                     # Upload to DiskWala
@@ -738,6 +776,13 @@ class IntegratedDownloaderBot:
                         logger.error(f"Failed to upload to DiskWala: {mp4_path}")
                         # Clean up files if upload failed
                         self.cleanup_files(mp4_path, jpg_path)
+                        # Mark as processed with reason
+                        self.db.mark_video_processed(
+                            video_data['video_url'], 
+                            'failed', 
+                            'DiskWala upload failed',
+                            None
+                        )
                         continue
                     
                     # Wait until a DiskWala URL is received for THIS specific video
@@ -772,6 +817,15 @@ class IntegratedDownloaderBot:
                             client, TELEGRAM_GROUP_ID, jpg_path, diskwala_url, video_data
                         )
                         
+                        # Mark as successfully processed
+                        file_size_mb = os.path.getsize(mp4_path) / (1024 * 1024) if os.path.exists(mp4_path) else None
+                        self.db.mark_video_processed(
+                            video_data['video_url'], 
+                            'success', 
+                            'Successfully uploaded and posted',
+                            file_size_mb
+                        )
+                        
                         logger.info(f"✅ Successfully processed: {video_data['video_url']}")
                         
                         # Clean up downloaded files after successful upload and posting
@@ -780,6 +834,13 @@ class IntegratedDownloaderBot:
                         logger.warning(f"❌ No DiskWala URL received for video {idx}: {video_data['video_url']}")
                         # Clean up files even if DiskWala URL not received
                         self.cleanup_files(mp4_path, jpg_path)
+                        # Mark as processed with reason
+                        self.db.mark_video_processed(
+                            video_data['video_url'], 
+                            'failed', 
+                            'No DiskWala URL received',
+                            None
+                        )
                     
                     # Reset for next video
                     current_diskwala_url = None
@@ -790,6 +851,13 @@ class IntegratedDownloaderBot:
                 
                 except Exception as e:
                     logger.error(f"Error processing video {video_data['video_url']}: {e}")
+                    # Mark as processed with error reason
+                    self.db.mark_video_processed(
+                        video_data['video_url'], 
+                        'error', 
+                        f'Processing error: {str(e)}',
+                        None
+                    )
                     # Reset for next video even on error
                     current_diskwala_url = None
                     continue
@@ -798,6 +866,15 @@ class IntegratedDownloaderBot:
             logger.info(f"\n📊 Summary:")
             logger.info(f"   Videos processed: {len(video_data_list)}")
             logger.info(f"   DiskWala URLs found: {len(self.urls_found)}")
+            
+            # Get processed videos statistics
+            stats = self.db.get_processed_videos_stats()
+            if stats:
+                logger.info(f"\n📈 Processed Videos Statistics:")
+                for status, data in stats.items():
+                    logger.info(f"   {status.upper()}: {data['count']} videos")
+                    if data['avg_file_size_mb'] > 0:
+                        logger.info(f"      Average file size: {data['avg_file_size_mb']:.2f} MB")
             
             if self.urls_found:
                 logger.info(f"\n🔗 All DiskWala URLs:")
