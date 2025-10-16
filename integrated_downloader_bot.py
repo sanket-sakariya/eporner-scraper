@@ -11,6 +11,7 @@ import sys
 import requests
 import subprocess
 import shutil
+import random
 from urllib.parse import urlparse
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -65,6 +66,10 @@ MODIFY_QUALITY = True  # Set to False to disable quality modification
 QUALITY_FROM = "480"   # Quality to replace
 QUALITY_TO = "240"     # Quality to replace with
 
+# Proxy rotation settings
+PROXY_ROTATION_MIN = 10  # Minimum videos before proxy change
+PROXY_ROTATION_MAX = 20  # Maximum videos before proxy change
+
 # -------------------- CLASSES --------------------
 
 class IntegratedDownloaderBot:
@@ -73,6 +78,8 @@ class IntegratedDownloaderBot:
         self.download_dir = DOWNLOAD_DIR
         self.urls_found = []
         self.current_proxy = None
+        self.videos_processed_with_current_proxy = 0
+        self.next_proxy_change_at = random.randint(PROXY_ROTATION_MIN, PROXY_ROTATION_MAX)
         
         # Create download directory
         if not os.path.exists(self.download_dir):
@@ -169,6 +176,24 @@ class IntegratedDownloaderBot:
         except Exception as e:
             logger.error(f"❌ Error setting random proxy: {e}")
             return False
+    
+    def should_rotate_proxy(self):
+        """Check if proxy should be rotated based on video count"""
+        return self.videos_processed_with_current_proxy >= self.next_proxy_change_at
+    
+    def rotate_proxy_if_needed(self):
+        """Rotate proxy if needed and reset counters"""
+        if self.should_rotate_proxy():
+            logger.info(f"🔄 Rotating proxy after {self.videos_processed_with_current_proxy} videos")
+            if self.set_random_proxy():
+                self.videos_processed_with_current_proxy = 0
+                self.next_proxy_change_at = random.randint(PROXY_ROTATION_MIN, PROXY_ROTATION_MAX)
+                logger.info(f"🎯 Next proxy change in {self.next_proxy_change_at} videos")
+                return True
+            else:
+                logger.warning("⚠️  Failed to rotate proxy, continuing with current proxy")
+                return False
+        return True
     
     def test_proxy_with_eporner(self):
         """Test current proxy with eporner.com"""
@@ -564,7 +589,7 @@ class IntegratedDownloaderBot:
         """Main process to download, upload, and send videos"""
         try:
             # Get video data from database
-            video_data_list = self.db.get_video_data_for_download(limit=5)
+            video_data_list = self.db.get_video_data_for_download(limit=50)  # Process up to 1000 videos
             
             if not video_data_list:
                 logger.info("No videos to process")
@@ -580,6 +605,7 @@ class IntegratedDownloaderBot:
                 
                 # Test proxy with eporner.com
                 self.test_network_connectivity()
+                logger.info(f"🎯 Next proxy change in {self.next_proxy_change_at} videos")
             
             # Setup Telegram client
             client, bot_entity = await self.setup_telegram_client()
@@ -607,6 +633,10 @@ class IntegratedDownloaderBot:
             for idx, video_data in enumerate(video_data_list, start=1):
                 try:
                     logger.info(f"\n[{idx}/{len(video_data_list)}] Processing video: {video_data['video_url']}")
+                    
+                    # Check if proxy should be rotated
+                    if USE_PROXY and self.should_rotate_proxy():
+                        self.rotate_proxy_if_needed()
                     
                     # Set current video URL for tracking
                     current_video_url = video_data['video_url']
@@ -757,6 +787,9 @@ class IntegratedDownloaderBot:
                         
                         logger.info(f"✅ Successfully processed: {video_data['video_url']}")
                         
+                        # Increment proxy usage counter
+                        self.videos_processed_with_current_proxy += 1
+                        
                         # Clean up downloaded files after successful upload and posting
                         self.cleanup_files(mp4_path, jpg_path)
                     else:
@@ -813,6 +846,8 @@ class IntegratedDownloaderBot:
                     logger.info(f"   Total proxies: {proxy_stats.get('total', 0)}")
                     logger.info(f"   Active proxies: {proxy_stats.get('active', 0)}")
                     logger.info(f"   Current proxy: {self.current_proxy['ip']}:{self.current_proxy['port']} ({self.current_proxy['country']})")
+                    logger.info(f"   Videos processed with current proxy: {self.videos_processed_with_current_proxy}")
+                    logger.info(f"   Next proxy change in: {self.next_proxy_change_at - self.videos_processed_with_current_proxy} videos")
             
             if self.urls_found:
                 logger.info(f"\n🔗 All DiskWala URLs:")
