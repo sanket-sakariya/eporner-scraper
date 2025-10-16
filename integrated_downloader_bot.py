@@ -632,7 +632,7 @@ class IntegratedDownloaderBot:
             self.test_network_connectivity()
             
             # Get video data from database
-            video_data_list = self.db.get_video_data_for_download(limit=10)
+            video_data_list = self.db.get_video_data_for_download(limit=5)
             
             if not video_data_list:
                 logger.info("No videos to process")
@@ -646,12 +646,17 @@ class IntegratedDownloaderBot:
                 logger.error("Failed to setup Telegram client")
                 return
             
-            # Set up URL monitoring
+            # Set up URL monitoring with proper tracking
+            current_video_url = None
+            current_diskwala_url = None
+            
             @client.on(events.NewMessage(chats=bot_entity))
             async def url_handler(event):
+                nonlocal current_diskwala_url
                 if event.message and event.message.message:
                     text = event.message.message
                     for url in DISKWALA_PATTERN.findall(text):
+                        current_diskwala_url = url
                         self.urls_found.append(url)
                         logger.info(f"🎉 DiskWala URL Found: {url}")
             
@@ -661,6 +666,10 @@ class IntegratedDownloaderBot:
             for idx, video_data in enumerate(video_data_list, start=1):
                 try:
                     logger.info(f"\n[{idx}/{len(video_data_list)}] Processing video: {video_data['video_url']}")
+                    
+                    # Set current video URL for tracking
+                    current_video_url = video_data['video_url']
+                    current_diskwala_url = None  # Reset for each video
                     
                     # Check if video is already uploaded to DiskWala
                     if self.db.is_video_already_uploaded(video_data['video_url']):
@@ -731,17 +740,24 @@ class IntegratedDownloaderBot:
                         self.cleanup_files(mp4_path, jpg_path)
                         continue
                     
-                    # Wait until a DiskWala URL is received (polling every 2s, timeout 5 min)
+                    # Wait until a DiskWala URL is received for THIS specific video
                     diskwala_timeout = 300      # seconds
                     diskwala_poll_interval = 2  # seconds
                     waited = 0
-                    while not self.urls_found and waited < diskwala_timeout:
+                    logger.info(f"⏳ Waiting for DiskWala URL for video: {video_data['video_url']}")
+                    
+                    while not current_diskwala_url and waited < diskwala_timeout:
                         await asyncio.sleep(diskwala_poll_interval)
                         waited += diskwala_poll_interval
+                        
+                        # Log progress every 30 seconds
+                        if waited % 30 == 0:
+                            logger.info(f"⏳ Still waiting for DiskWala URL... ({waited}s/{diskwala_timeout}s)")
                     
-                    # Check if we got a DiskWala URL
-                    if self.urls_found:
-                        diskwala_url = self.urls_found[-1]  # Get latest URL
+                    # Check if we got a DiskWala URL for this video
+                    if current_diskwala_url:
+                        diskwala_url = current_diskwala_url
+                        logger.info(f"✅ Received DiskWala URL for video {idx}: {diskwala_url}")
                         
                         # Save to database
                         self.db.save_diskwala_data(
@@ -761,9 +777,12 @@ class IntegratedDownloaderBot:
                         # Clean up downloaded files after successful upload and posting
                         self.cleanup_files(mp4_path, jpg_path)
                     else:
-                        logger.warning(f"No DiskWala URL received for: {video_data['video_url']}")
+                        logger.warning(f"❌ No DiskWala URL received for video {idx}: {video_data['video_url']}")
                         # Clean up files even if DiskWala URL not received
                         self.cleanup_files(mp4_path, jpg_path)
+                    
+                    # Reset for next video
+                    current_diskwala_url = None
                     
                     # Delay between uploads
                     if idx < len(video_data_list):
@@ -771,6 +790,8 @@ class IntegratedDownloaderBot:
                 
                 except Exception as e:
                     logger.error(f"Error processing video {video_data['video_url']}: {e}")
+                    # Reset for next video even on error
+                    current_diskwala_url = None
                     continue
             
             # Summary
