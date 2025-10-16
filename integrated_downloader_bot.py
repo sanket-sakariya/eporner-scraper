@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Integrated Downloader Bot
-Downloads videos from video_data table, uploads to DiskWala, and sends to Telegram group
+Minimal Downloader Bot - Downloads videos and uploads to DiskWala
 """
 
 import os
@@ -73,6 +72,7 @@ class IntegratedDownloaderBot:
         self.db = DatabaseManager()
         self.download_dir = DOWNLOAD_DIR
         self.urls_found = []
+        self.current_proxy = None
         
         # Create download directory
         if not os.path.exists(self.download_dir):
@@ -83,12 +83,7 @@ class IntegratedDownloaderBot:
         
         # Configure proxy if enabled
         if USE_PROXY:
-            self.proxies = {
-                'http': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_IP}:{PROXY_PORT}',
-                'https': f'http://{PROXY_USERNAME}:{PROXY_PASSWORD}@{PROXY_IP}:{PROXY_PORT}'
-            }
-            self.session.proxies.update(self.proxies)
-            logger.info(f"🔗 Proxy configured: {PROXY_IP}:{PROXY_PORT}")
+            self.set_random_proxy()
         else:
             self.proxies = None
             logger.info("🚫 Proxy disabled")
@@ -154,6 +149,49 @@ class IntegratedDownloaderBot:
         # Store user agents for rotation
         self.user_agents = user_agents
         self.current_ua_index = 0
+    
+    def set_random_proxy(self):
+        """Set a random proxy from database"""
+        try:
+            proxy = self.db.get_random_proxy()
+            if proxy:
+                self.current_proxy = proxy
+                self.proxies = {
+                    'http': f"http://{proxy['username']}:{proxy['password']}@{proxy['ip']}:{proxy['port']}",
+                    'https': f"http://{proxy['username']}:{proxy['password']}@{proxy['ip']}:{proxy['port']}"
+                }
+                self.session.proxies.update(self.proxies)
+                logger.info(f"🔗 Using proxy: {proxy['ip']}:{proxy['port']} ({proxy['country']})")
+                return True
+            else:
+                logger.warning("⚠️  No proxies available in database")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Error setting random proxy: {e}")
+            return False
+    
+    def test_proxy_with_eporner(self):
+        """Test current proxy with eporner.com"""
+        if not self.current_proxy:
+            return False
+            
+        try:
+            test_url = "https://www.eporner.com/"
+            response = self.session.get(test_url, timeout=15)
+            
+            if response.status_code == 200:
+                logger.info(f"✅ Proxy test successful with eporner.com")
+                self.db.mark_proxy_success(self.current_proxy['proxy_id'])
+                return True
+            else:
+                logger.warning(f"⚠️  Proxy test failed with eporner.com (status: {response.status_code})")
+                self.db.mark_proxy_failure(self.current_proxy['proxy_id'])
+                return False
+                
+        except Exception as e:
+            logger.warning(f"⚠️  Proxy test failed with eporner.com: {e}")
+            self.db.mark_proxy_failure(self.current_proxy['proxy_id'])
+            return False
     
     def download_file(self, url, filename, max_attempts=None):
         """Download a file from URL with server-optimized retry logic"""
@@ -341,52 +379,6 @@ class IntegratedDownloaderBot:
             n /= 1024.0
         return f"{n:.1f}PB"
     
-    def test_proxy_connection(self):
-        """Test proxy connection if enabled"""
-        if not USE_PROXY:
-            logger.info("🚫 Proxy testing skipped (proxy disabled)")
-            return True
-            
-        logger.info(f"🔍 Testing proxy connection: {PROXY_IP}:{PROXY_PORT}")
-        
-        test_urls = [
-            "http://httpbin.org/ip",
-            "https://httpbin.org/ip",
-            "http://ipinfo.io/ip",
-            "https://api.ipify.org",
-        ]
-        
-        for url in test_urls:
-            try:
-                logger.info(f"Testing proxy with: {url}")
-                response = self.session.get(url, timeout=15)
-                
-                if response.status_code == 200:
-                    logger.info(f"✅ Proxy connection successful via {url}")
-                    logger.info(f"   Response: {response.text.strip()}")
-                    return True
-                elif response.status_code == 503:
-                    logger.warning(f"⚠️  Server overloaded (503) - trying next endpoint...")
-                    continue
-                elif response.status_code == 407:
-                    logger.error(f"❌ Proxy authentication failed (407) - check credentials")
-                    return False
-                else:
-                    logger.warning(f"⚠️  Proxy test failed with status: {response.status_code} - trying next endpoint...")
-                    continue
-                    
-            except requests.exceptions.ProxyError as e:
-                logger.warning(f"⚠️  Proxy error with {url}: {e}")
-                continue
-            except requests.exceptions.Timeout:
-                logger.warning(f"⚠️  Timeout with {url} - trying next endpoint...")
-                continue
-            except Exception as e:
-                logger.warning(f"⚠️  Error testing {url}: {e}")
-                continue
-        
-        logger.warning("⚠️  All proxy test endpoints failed, but proceeding anyway...")
-        return True  # Proceed anyway as proxy might work for actual downloads
 
     def check_file_size(self, download_url):
         """Check file size before downloading to avoid large files"""
@@ -429,77 +421,16 @@ class IntegratedDownloaderBot:
             logger.warning(f"⚠️  Error checking file size: {e} - proceeding anyway")
             return True, 0
 
-    def test_proxy_with_download_url(self, download_url):
-        """Test proxy specifically with a download URL"""
-        if not USE_PROXY:
-            return True
-            
-        try:
-            logger.info(f"🔍 Testing proxy with download URL...")
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'video/mp4,video/*,*/*',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://www.eporner.com/',
-            }
-            
-            # Test with HEAD request first (faster)
-            response = self.session.head(download_url, headers=headers, timeout=15)
-            
-            if response.status_code in [200, 206, 302, 301]:
-                logger.info(f"✅ Proxy works with download URL (status: {response.status_code})")
-                return True
-            elif response.status_code == 503:
-                logger.warning(f"⚠️  Download server overloaded (503) - proxy may still work")
-                return True  # Allow to proceed as proxy might work for actual download
-            else:
-                logger.warning(f"⚠️  Download URL test failed with status: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            logger.warning(f"⚠️  Download URL proxy test failed: {e}")
-            return False
 
     def test_network_connectivity(self):
-        """Test network connectivity and diagnose server issues"""
+        """Test network connectivity with current proxy"""
         logger.info("🔍 Testing network connectivity...")
         
-        # Test proxy first if enabled
-        if USE_PROXY:
-            self.test_proxy_connection()
-        
-        test_urls = [
-            "https://www.eporner.com/",
-            "https://httpbin.org/ip",
-            "https://www.google.com/",
-        ]
-        
-        for url in test_urls:
-            try:
-                logger.info(f"Testing: {url}")
-                response = self.session.get(url, timeout=10)
-                logger.info(f"✅ {url} - Status: {response.status_code}")
-                
-                if "eporner.com" in url:
-                    # Check if we're being blocked
-                    if response.status_code == 403:
-                        logger.warning("🚫 eporner.com is blocking our requests (403 Forbidden)")
-                    elif "blocked" in response.text.lower() or "access denied" in response.text.lower():
-                        logger.warning("🚫 eporner.com is blocking our access")
-                    else:
-                        logger.info("✅ eporner.com is accessible")
-                        
-            except Exception as e:
-                logger.error(f"❌ {url} - Error: {e}")
-        
-        # Test DNS resolution
-        try:
-            import socket
-            ip = socket.gethostbyname("www.eporner.com")
-            logger.info(f"✅ DNS resolution for eporner.com: {ip}")
-        except Exception as e:
-            logger.error(f"❌ DNS resolution failed: {e}")
+        # Test proxy with eporner.com
+        if USE_PROXY and self.current_proxy:
+            self.test_proxy_with_eporner()
+        else:
+            logger.info("🚫 No proxy configured")
     
     def cleanup_files(self, mp4_path, jpg_path):
         """Delete MP4 and JPG files after successful upload and posting"""
@@ -632,9 +563,6 @@ class IntegratedDownloaderBot:
     async def process_videos(self):
         """Main process to download, upload, and send videos"""
         try:
-            # Test network connectivity and proxy first
-            self.test_network_connectivity()
-            
             # Get video data from database
             video_data_list = self.db.get_video_data_for_download(limit=5)
             
@@ -643,6 +571,15 @@ class IntegratedDownloaderBot:
                 return
             
             logger.info(f"Found {len(video_data_list)} videos to process")
+            
+            # Set random proxy for this batch
+            if USE_PROXY:
+                if not self.set_random_proxy():
+                    logger.error("❌ No proxies available, cannot proceed")
+                    return
+                
+                # Test proxy with eporner.com
+                self.test_network_connectivity()
             
             # Setup Telegram client
             client, bot_entity = await self.setup_telegram_client()
@@ -714,13 +651,6 @@ class IntegratedDownloaderBot:
                     else:
                         logger.info(f"📥 Using original MP4 URL: {mp4_url}")
                     
-                    # Test proxy with download URL
-                    if USE_PROXY:
-                        logger.info(f"🔍 Testing proxy with MP4 URL: {mp4_url}")
-                        proxy_test_result = self.test_proxy_with_download_url(mp4_url)
-                        if not proxy_test_result:
-                            logger.warning(f"⚠️  Proxy test failed for MP4 URL, but proceeding anyway...")
-                    
                     # Check file size before downloading
                     file_size_ok, file_size = self.check_file_size(mp4_url)
                     if not file_size_ok:
@@ -750,14 +680,8 @@ class IntegratedDownloaderBot:
                         )
                         continue
                     
-                    # Test proxy with JPG URL and download JPG file
+                    # Download JPG file
                     jpg_url = jpg_links[0]  # Get first JPG link
-                    if USE_PROXY:
-                        logger.info(f"🔍 Testing proxy with JPG URL: {jpg_url}")
-                        proxy_test_result = self.test_proxy_with_download_url(jpg_url)
-                        if not proxy_test_result:
-                            logger.warning(f"⚠️  Proxy test failed for JPG URL, but proceeding anyway...")
-                    
                     jpg_filename = f"image_{video_data['id']}.jpg"
                     jpg_path = self.download_file(jpg_url, jpg_filename)
                     
@@ -880,6 +804,15 @@ class IntegratedDownloaderBot:
                     logger.info(f"   {status.upper()}: {data['count']} videos")
                     if data['avg_file_size_mb'] > 0:
                         logger.info(f"      Average file size: {data['avg_file_size_mb']:.2f} MB")
+            
+            # Get proxy statistics
+            if USE_PROXY and self.current_proxy:
+                proxy_stats = self.db.get_proxy_stats()
+                if proxy_stats:
+                    logger.info(f"\n🌐 Proxy Statistics:")
+                    logger.info(f"   Total proxies: {proxy_stats.get('total', 0)}")
+                    logger.info(f"   Active proxies: {proxy_stats.get('active', 0)}")
+                    logger.info(f"   Current proxy: {self.current_proxy['ip']}:{self.current_proxy['port']} ({self.current_proxy['country']})")
             
             if self.urls_found:
                 logger.info(f"\n🔗 All DiskWala URLs:")
