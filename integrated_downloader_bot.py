@@ -589,7 +589,7 @@ class IntegratedDownloaderBot:
         """Main process to download, upload, and send videos"""
         try:
             # Get video data from database
-            video_data_list = self.db.get_video_data_for_download(limit=1000)  # Process up to 1000 videos
+            video_data_list = self.db.get_video_data_for_download(limit=100)  # Process up to 1000 videos
             
             if not video_data_list:
                 logger.info("No videos to process")
@@ -663,6 +663,20 @@ class IntegratedDownloaderBot:
                         logger.warning(f"No MP4 or JPG links found for: {video_data['video_url']}")
                         continue
                     
+                    # Check if JPG URL already exists in diskwala_data to prevent duplicates
+                    jpg_url = jpg_links[0]  # Get first JPG link
+                    if self.db.is_jpg_url_already_uploaded(jpg_url):
+                        logger.info(f"🔄 JPG URL already uploaded (duplicate detected): {jpg_url}")
+                        logger.info(f"⏭️  Skipping video to prevent duplicate: {video_data['video_url']}")
+                        # Mark as processed with duplicate reason
+                        self.db.mark_video_processed(
+                            video_data['video_url'], 
+                            'skipped', 
+                            'Duplicate JPG URL already uploaded',
+                            None
+                        )
+                        continue
+                    
                     # Get MP4 URL and modify quality from 480p to 240p
                     mp4_url = mp4_links[0]  # Get first MP4 link
                     
@@ -710,8 +724,7 @@ class IntegratedDownloaderBot:
                         )
                         continue
                     
-                    # Download JPG file
-                    jpg_url = jpg_links[0]  # Get first JPG link
+                    # Download JPG file (jpg_url already extracted above)
                     jpg_filename = f"image_{video_data['id']}.jpg"
                     jpg_path = self.download_file(jpg_url, jpg_filename)
                     
@@ -837,6 +850,13 @@ class IntegratedDownloaderBot:
                     logger.info(f"   {status.upper()}: {data['count']} videos")
                     if data['avg_file_size_mb'] > 0:
                         logger.info(f"      Average file size: {data['avg_file_size_mb']:.2f} MB")
+            
+            # Get duplicate detection statistics
+            duplicate_stats = self.db.get_duplicate_stats()
+            if duplicate_stats:
+                logger.info(f"\n🔄 Duplicate Detection Statistics:")
+                logger.info(f"   Duplicates skipped: {duplicate_stats['duplicate_skipped']} videos")
+                logger.info(f"   Unique JPG uploads: {duplicate_stats['unique_jpg_uploads']} videos")
             
             # Get proxy statistics
             if USE_PROXY and self.current_proxy:

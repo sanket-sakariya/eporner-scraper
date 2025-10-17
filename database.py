@@ -718,6 +718,57 @@ class DatabaseManager:
             logger.error(f"Error getting proxy stats: {e}")
             return {}
     
+    def is_jpg_url_already_uploaded(self, jpg_url):
+        """Check if JPG URL already exists in diskwala_data table"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT id FROM diskwala_data WHERE jpg_image_link = %s", (jpg_url,))
+            result = cursor.fetchone()
+            
+            cursor.close()
+            conn.close()
+            
+            return result is not None
+            
+        except Exception as e:
+            logger.error(f"Error checking if JPG URL already uploaded: {e}")
+            return False
+    
+    def get_duplicate_stats(self):
+        """Get statistics about duplicate detection"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            # Count videos skipped due to duplicate JPG URLs
+            cursor.execute("""
+                SELECT COUNT(*) as duplicate_count
+                FROM processed_videos 
+                WHERE reason = 'Duplicate JPG URL already uploaded'
+            """)
+            duplicate_result = cursor.fetchone()
+            
+            # Count total unique JPG URLs in diskwala_data
+            cursor.execute("""
+                SELECT COUNT(DISTINCT jpg_image_link) as unique_jpg_count
+                FROM diskwala_data
+            """)
+            unique_result = cursor.fetchone()
+            
+            cursor.close()
+            conn.close()
+            
+            return {
+                'duplicate_skipped': duplicate_result[0] if duplicate_result else 0,
+                'unique_jpg_uploads': unique_result[0] if unique_result else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting duplicate stats: {e}")
+            return {'duplicate_skipped': 0, 'unique_jpg_uploads': 0}
+    
     def clear_all_proxies(self):
         """Clear all proxies from database"""
         try:
